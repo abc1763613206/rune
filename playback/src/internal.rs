@@ -5,13 +5,16 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, error, info, warn};
+use rodio::source::SeekError;
 use rodio::{Decoder, PlayError, Sink, Source};
 use tokio::sync::mpsc;
 use tokio::time::{interval, sleep_until, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use crate::buffered::rune_buffered;
 use crate::output_stream::{RuneOutputStream, RuneOutputStreamHandle};
 use crate::realtime_fft::RealTimeFFT;
+use crate::shared_source::SharedSource;
 use crate::strategies::{
     AddMode, PlaybackStrategy, RepeatAllStrategy, RepeatOneStrategy, SequentialStrategy,
     ShuffleStrategy, UpdateReason,
@@ -75,6 +78,7 @@ pub enum PlayerCommand {
     SetPlaybackMode(PlaybackMode),
     SetVolume(f32),
     SetRealtimeFFTEnabled(bool),
+    SetAdaptiveSwitchingEnabled(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +150,28 @@ fn try_new_sink(stream: &RuneOutputStreamHandle) -> Result<Sink, PlayError> {
     Ok(sink)
 }
 
+impl Source for SharedSource {
+    fn current_frame_len(&self) -> Option<usize> {
+        self.inner.lock().unwrap().current_frame_len()
+    }
+
+    fn channels(&self) -> u16 {
+        self.inner.lock().unwrap().channels()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.inner.lock().unwrap().sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.lock().unwrap().total_duration()
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
+        self.inner.lock().unwrap().try_seek(pos)
+    }
+}
+
 pub(crate) struct PlayerInternal {
     commands: mpsc::UnboundedReceiver<PlayerCommand>,
     event_sender: mpsc::UnboundedSender<PlayerEvent>,
@@ -166,6 +192,7 @@ pub(crate) struct PlayerInternal {
     stream_error_sender: mpsc::UnboundedSender<String>,
     stream_error_receiver: mpsc::UnboundedReceiver<String>,
     stream_retry_count: usize,
+    adaptive_switching: bool,
 }
 
 impl PlayerInternal {
@@ -195,6 +222,7 @@ impl PlayerInternal {
             stream_error_sender,
             stream_error_receiver,
             stream_retry_count: 0,
+            adaptive_switching: false,
         }
     }
 
@@ -240,6 +268,7 @@ impl PlayerInternal {
                         PlayerCommand::SetPlaybackMode(mode) => self.set_playback_mode(mode),
                         PlayerCommand::SetVolume(volume) => self.set_volume(volume),
                         PlayerCommand::SetRealtimeFFTEnabled(enabled) => self.set_realtime_fft_enabled(enabled),
+                        PlayerCommand::SetAdaptiveSwitchingEnabled(enabled) => self.set_adaptive_switching(enabled),
                     }?;
                 },
                 Ok(fft_data) = fft_receiver.recv() => {
@@ -314,8 +343,15 @@ impl PlayerInternal {
             let item = &self.playlist[mapped_index];
             let file = File::open(item.path.clone())
                 .with_context(|| format!("Failed to open file: {:?}", item.path))?;
-            let source =
-                Decoder::new(BufReader::new(file)).with_context(|| "Failed to decode audio")?;
+            let source = Decoder::new(BufReader::new(file));
+
+            if source.is_err() {
+                self.next()?;
+                return Ok(());
+            }
+
+            let source = SharedSource::new(rune_buffered(source.unwrap()));
+            let source_for_fft = Arc::clone(&source.inner);
 
             let (stream, stream_handle) = RuneOutputStream::try_default_with_callback({
                 let error_sender = self.stream_error_sender.clone();
@@ -345,14 +381,19 @@ impl PlayerInternal {
             });
 
             sink.set_volume(self.volume);
-            sink.append(
-                source.periodic_access(Duration::from_millis(16), move |sample| {
-                    let data: Vec<i16> = sample.take(sample.channels() as usize).collect();
-                    if fft_tx.send(data).is_err() {
-                        error!("Failed to send FFT data");
+            sink.append(source.periodic_access(
+                Duration::from_millis(12),
+                move |_sample: &mut SharedSource| {
+                    if let Ok(guard) = source_for_fft.lock() {
+                        let data: Option<Vec<i16>> = guard.current_samples();
+                        if let Some(data) = data {
+                            if fft_tx.send(data).is_err() {
+                                error!("Failed to send FFT data");
+                            }
+                        }
                     }
-                }),
-            );
+                },
+            ));
 
             if !play {
                 sink.pause();
@@ -497,13 +538,32 @@ impl PlayerInternal {
         Ok(())
     }
 
+    fn do_switch_back(&mut self, index: usize) -> Result<()> {
+        if let Some(prev_index) = self.playback_strategy.previous(index, self.playlist.len()) {
+            self.load(Some(prev_index), true, true)
+                .with_context(|| "Failed to load previous track")?;
+        } else {
+            info!("Beginning of playlist reached");
+        }
+
+        Ok(())
+    }
+
     fn previous(&mut self) -> Result<()> {
         if let Some(index) = self.current_track_index {
-            if let Some(prev_index) = self.playback_strategy.previous(index, self.playlist.len()) {
-                self.load(Some(prev_index), true, true)
-                    .with_context(|| "Failed to load previous track")?;
-            } else {
-                info!("Beginning of playlist reached");
+            match &self.sink {
+                Some(sink) => {
+                    let need_adaptive = sink.get_pos() > Duration::from_secs(3);
+
+                    if self.adaptive_switching && need_adaptive {
+                        self.load(Some(index), true, true)
+                            .with_context(|| "Failed to reload track")?;
+                    } else {
+                        return self.do_switch_back(index);
+                    }
+                    return Ok(());
+                }
+                None => return self.do_switch_back(index),
             }
         }
 
@@ -535,22 +595,37 @@ impl PlayerInternal {
                     if let Some(track_index) = self.current_track_index {
                         let track_index = self.get_mapped_track_index(track_index);
 
-                        self.event_sender
-                            .send(PlayerEvent::Playing {
-                                id: self
-                                    .current_track_id
-                                    .ok_or(anyhow!("Current track id unavailable"))?,
-                                index: track_index,
-                                path: self
-                                    .current_track_path
-                                    .clone()
-                                    .ok_or(anyhow!("Current track path unavailable"))?,
-                                playback_mode: self.playback_mode,
-                                position,
-                            })
-                            .with_context(|| "Failed to send Playing event")?;
-
-                        self.state = InternalPlaybackState::Playing;
+                        if self.state == InternalPlaybackState::Playing {
+                            self.event_sender
+                                .send(PlayerEvent::Playing {
+                                    id: self
+                                        .current_track_id
+                                        .ok_or(anyhow!("Current track id unavailable"))?,
+                                    index: track_index,
+                                    path: self
+                                        .current_track_path
+                                        .clone()
+                                        .ok_or(anyhow!("Current track path unavailable"))?,
+                                    playback_mode: self.playback_mode,
+                                    position,
+                                })
+                                .with_context(|| "Failed to send Playing event")?;
+                        } else {
+                            self.event_sender
+                                .send(PlayerEvent::Paused {
+                                    id: self
+                                        .current_track_id
+                                        .ok_or(anyhow!("Current track id unavailable"))?,
+                                    index: track_index,
+                                    path: self
+                                        .current_track_path
+                                        .clone()
+                                        .ok_or(anyhow!("Current track path unavailable"))?,
+                                    playback_mode: self.playback_mode,
+                                    position,
+                                })
+                                .with_context(|| "Failed to send Paused event")?;
+                        }
                     }
                 }
                 Err(e) => {
@@ -785,6 +860,14 @@ impl PlayerInternal {
         if let Ok(mut enabled) = self.fft_enabled.lock() {
             *enabled = x;
         }
+
+        Ok(())
+    }
+
+    fn set_adaptive_switching(&mut self, x: bool) -> Result<()> {
+        self.adaptive_switching = x;
+
+        info!("Adaptive switching status changed: {:#?}", x);
 
         Ok(())
     }

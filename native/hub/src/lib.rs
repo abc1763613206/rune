@@ -1,10 +1,12 @@
 mod analyze;
+mod apple_bridge;
 mod collection;
 mod connection;
 mod cover_art;
 mod directory;
 mod library_home;
 mod library_manage;
+mod license;
 mod logging;
 mod media_file;
 mod messages;
@@ -21,6 +23,7 @@ mod utils;
 use std::sync::Arc;
 
 use anyhow::Context;
+use license::validate_license_request;
 use log::{debug, error, info};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -39,6 +42,7 @@ use crate::cover_art::*;
 use crate::directory::*;
 use crate::library_home::*;
 use crate::library_manage::*;
+use crate::license::*;
 use crate::logging::*;
 use crate::media_file::*;
 use crate::messages::*;
@@ -145,6 +149,7 @@ async fn player_loop(path: String, db_connections: DatabaseConnections) {
             SetPlaybackModeRequest => (player),
             MovePlaylistItemRequest => (player),
             SetRealtimeFftEnabledRequest => (player),
+            SetAdaptiveSwitchingEnabledRequest => (player),
 
             SfxPlayRequest => (sfx_player),
 
@@ -166,6 +171,7 @@ async fn player_loop(path: String, db_connections: DatabaseConnections) {
 
             FetchAllPlaylistsRequest => (main_db),
             CreatePlaylistRequest => (main_db),
+            CreateM3u8PlaylistRequest => (main_db),
             UpdatePlaylistRequest => (main_db),
             RemovePlaylistRequest => (main_db),
             AddItemToPlaylistRequest => (main_db),
@@ -195,6 +201,8 @@ async fn player_loop(path: String, db_connections: DatabaseConnections) {
             RemoveLogRequest => (main_db),
 
             SystemInfoRequest => (main_db),
+            RegisterLicenseRequest => (main_db),
+            ValidateLicenseRequest => (main_db),
         );
     });
 }
