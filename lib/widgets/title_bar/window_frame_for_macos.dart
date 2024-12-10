@@ -1,17 +1,16 @@
 import 'dart:io';
 
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:fluent_ui/fluent_ui.dart';
-import 'package:flutter_fullscreen/flutter_fullscreen.dart';
 
 import '../../utils/macos_window_control_button_manager.dart';
+import '../../providers/full_screen.dart';
 import '../../providers/router_path.dart';
 import '../../providers/responsive_providers.dart';
 
 import '../router/rune_stack.dart';
 
-import 'darg_move_window_area.dart';
+import 'drag_move_window_area.dart';
 
 class WindowFrameForMacOS extends StatefulWidget {
   final Widget child;
@@ -22,26 +21,37 @@ class WindowFrameForMacOS extends StatefulWidget {
   State<WindowFrameForMacOS> createState() => _WindowFrameForMacOSState();
 }
 
-class _WindowFrameForMacOSState extends State<WindowFrameForMacOS>
-    with FullScreenListener {
+class _WindowFrameForMacOSState extends State<WindowFrameForMacOS> {
+  late FullScreenProvider _fullscreen;
+  late ResponsiveProvider _responsiveProvider;
+
   @override
-  void initState() {
-    super.initState();
-    FullScreen.addListener(this);
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _fullscreen = Provider.of<FullScreenProvider>(context, listen: false);
+    _responsiveProvider = Provider.of<ResponsiveProvider>(context, listen: false);
+
+    _fullscreen.addListener(updateWindowControlButtons);
+    _responsiveProvider.addListener(updateWindowControlButtons);
+    $router.addListener(updateWindowControlButtons);
   }
 
   @override
   dispose() {
     super.dispose();
-    FullScreen.removeListener(this);
+    _fullscreen.removeListener(updateWindowControlButtons);
+    _responsiveProvider.removeListener(updateWindowControlButtons);
+    $router.removeListener(updateWindowControlButtons);
   }
 
-  @override
-  void onFullScreenChanged(bool enabled, SystemUiMode? systemUiMode) {
-    if (!enabled) {
-      MacOSWindowControlButtonManager.setVertical();
+  void updateWindowControlButtons() {
+    if (_responsiveProvider.currentDeviceType == DeviceType.band ||
+        _responsiveProvider.currentDeviceType == DeviceType.dock) {
+      MacOSWindowControlButtonManager.shared.setHide();
+    } else {
+      MacOSWindowControlButtonManager.shared.setShow();
+      MacOSWindowControlButtonManager.shared.setVertical();
     }
-    setState(() => {});
   }
 
   @override
@@ -71,8 +81,7 @@ class _WindowFrameForMacOSState extends State<WindowFrameForMacOS>
                 activeBreakpoint == DeviceType.dock ||
                 path == '/' ||
                 path == '/scanning') {
-
-              return DargMoveWindowArea();
+              return DragMoveWindowArea();
             }
 
             return Column(
@@ -83,16 +92,19 @@ class _WindowFrameForMacOSState extends State<WindowFrameForMacOS>
                     children: [
                       SizedBox(
                         width: 320,
-                        child: DargMoveWindowArea(isEnabledDoubleTap: false),
+                        child: DragMoveWindowArea(isEnabledDoubleTap: false),
                       ),
-                      Expanded(child: DargMoveWindowArea())
+                      Expanded(child: DragMoveWindowArea())
                     ],
                   ),
                 ),
                 SizedBox(
                   height: 40,
-                  child: Expanded(
-                      child: DargMoveWindowArea(isEnabledDoubleTap: false),
+                  child: Row(
+                    children: [
+                      Expanded(
+                          child: DragMoveWindowArea(isEnabledDoubleTap: false)),
+                    ],
                   ),
                 ),
               ],
