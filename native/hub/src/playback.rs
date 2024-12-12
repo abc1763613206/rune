@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -18,6 +19,7 @@ use crate::LoadRequest;
 use crate::OperatePlaybackWithMixQueryRequest;
 use crate::OperatePlaybackWithMixQueryResponse;
 use crate::PlaylistOperateMode;
+use crate::SetAdaptiveSwitchingEnabledRequest;
 use crate::SetRealtimeFftEnabledRequest;
 use crate::VolumeRequest;
 use crate::VolumeResponse;
@@ -29,20 +31,20 @@ use crate::{
 pub fn files_to_playback_request(
     lib_path: &String,
     files: &[database::entities::media_files::Model],
-) -> std::vec::Vec<(i32, std::path::PathBuf)> {
+) -> Vec<(i32, PathBuf)> {
     files
         .iter()
-        .map(|file| {
-            let file_path = canonicalize(
-                Path::new(lib_path)
-                    .join(&file.directory)
-                    .join(&file.file_name),
-            )
-            .unwrap();
+        .filter_map(|file| {
+            let file_path = Path::new(lib_path)
+                .join(&file.directory)
+                .join(&file.file_name);
 
-            (file.id, file_path)
+            match canonicalize(&file_path) {
+                Ok(canonical_path) => Some((file.id, canonical_path)),
+                Err(_) => None,
+            }
         })
-        .collect::<Vec<_>>()
+        .collect()
 }
 
 pub async fn load_request(
@@ -190,6 +192,18 @@ pub async fn set_realtime_fft_enabled_request(
     let enabled = request.enabled;
 
     player.lock().await.set_realtime_fft_enabled(enabled);
+
+    Ok(())
+}
+
+pub async fn set_adaptive_switching_enabled_request(
+    player: Arc<Mutex<Player>>,
+    dart_signal: DartSignal<SetAdaptiveSwitchingEnabledRequest>,
+) -> Result<()> {
+    let request = dart_signal.message;
+    let enabled = request.enabled;
+
+    player.lock().await.set_adaptive_switching_enabled(enabled);
 
     Ok(())
 }

@@ -873,7 +873,7 @@
   "@portableMode": {
     "description": "One candidate library mode for users"
   },
-  "portableModeSubtitle": "We will store your media index together in the library folder.",
+  "portableModeSubtitle": "We will store your index together in the library folder.",
   "@portableModeSubtitle": {
     "description": "The subtitle of the candidate library mode for users"
   },
@@ -881,7 +881,7 @@
   "@localMode": {
     "description": "One candidate library mode for users"
   },
-  "localModeSubtitle": "We will store your media index in Rune's configuration directory.",
+  "localModeSubtitle": "We will store your index in the configuration directory.",
   "@localModeSubtitle": {
     "description": "The subtitle of the candidate library mode for users"
   },
@@ -892,5 +892,81 @@
   "rememberWindowSizeSubtitle": "Save your window size as you adjust it, and launch the program with the same dimensions next time.",
   "@rememberWindowSizeSubtitle": {
     "description": "The subtitle of a setting option in the theme page"
+  },
+  "closeNotification": "Rune is Still Running",
+  "@closeNotification": {
+    "description": "The notification is popped up while user closed the window"
+  },
+  "closeNotificationSubtitle": "Rune is currently running in the background. You can easily locate it in the system tray.",
+  "@closeNotificationSubtitle": {
+    "description": ""
+  },
+  "register": "Register",
+  "@register": {
+    "description": "Title of the register tile in the settings page"
+  },
+  "evaluationModeContent4": "You can purchase a music file as a registration key from the store below. Click \"Register\" to verify your genuine status.",
+  "@evaluationModeContent4": {
+    "description": "Content of the evaluation mode modal"
+  },
+  "registerAction": "Register",
+  "@registerAction": {
+    "description": "The label of the register button in a modal"
+  },
+  "registerFailed": "Failed",
+  "@registerFailed": {
+    "description": "The title of the register failed modal"
+  },
+  "registerFailedSubtitle": "An error occurred during the verification process.",
+  "@registerFailedSubtitle": {
+    "description": "The content of the register failed modal"
+  },
+  "registerSuccess": "Complete",
+  "@registerSuccess": {
+    "description": "The title of the register success modal"
+  },
+  "registerSuccessSubtitle": "Congratulations! Your software has been successfully registered. Thank you for choosing Rune.",
+  "@registerSuccessSubtitle": {
+    "description": "The content of the register success modal"
+  },
+  "registerInvalid": "Invalid key",
+  "@registerInvalid": {
+    "description": "The title of the invalid register key modal"
+  },
+  "registerInvalidSubtitle": "The key file you provided is invalid. Please check the file and try again.",
+  "@registerInvalidSubtitle": {
+    "description": "The content of the invalid register key modal"
+  },
+  "importM3u8Success": "Partially Successful",
+  "@importM3u8Success": {
+    "description": "The title of the partially import success modal"
+  },
+  "importM3u8SuccessSubtitle": "Your tracks have been imported, but some were not found.",
+  "@importM3u8SuccessSubtitle": {
+    "description": "The content of the partially import success modal"
+  },
+  "importM3u8Failed": "Import Failed",
+  "@importM3u8Failed": {
+    "description": "The title of the import failed modal"
+  },
+  "importM3u8FailedSubtitle": "An error occurred during the import process.",
+  "@importM3u8FailedSubtitle": {
+    "description": "The content of the import failed modal"
+  },
+  "importM3u8": "Import Playlist",
+  "@importM3u8": {
+    "description": "Context menu item guiding users to import a new playlist."
+  },
+  "adaptiveSwitching": "Adaptive Switching",
+  "@adaptiveSwitching": {
+    "description": "Settings title of an entry in the playback settings page"
+  },
+  "adaptiveSwitchingSubtitle": "Restarts from the beginning if you switch back after the current track has played for more than three seconds.",
+  "@adaptiveSwitchingSubtitle": {
+    "description": "Settings description of an entry in the playback settings page"
+  },
+  "considerPurchase": "Please consider purchasing a genuine license.",
+  "@considerPurchase": {
+    "description": "Notice in the about page, guiding user to purchase a license"
   }
 }

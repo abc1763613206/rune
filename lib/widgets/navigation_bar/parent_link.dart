@@ -49,8 +49,8 @@ class ParentLinkState extends State<ParentLink> {
 
     return Padding(
       padding: const EdgeInsets.only(right: 12),
-      child: GestureDetector(
-        onTap: widget.onPressed,
+      child: Listener(
+        onPointerUp: (_) => widget.onPressed(),
         child: FocusableActionDetector(
           focusNode: _focusNode,
           onShowFocusHighlight: _handleFocusHighlight,
@@ -65,7 +65,7 @@ class ParentLinkState extends State<ParentLink> {
               key: Key(widget.titleFlipKey),
               flipKey: widget.titleFlipKey,
               text: widget.text,
-              scale: 6,
+              scale: 5,
               alpha: _isFocus ? 255 : _alpha,
               color: _isFocus ? accentColor : null,
               glowColor: accentColor,
