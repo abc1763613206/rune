@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use log::{debug, error, info};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use sea_orm::entity::prelude::*;
 use sea_orm::{ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
@@ -54,6 +56,7 @@ pub fn read_metadata(description: &FileDescription) -> Result<FileMetadata> {
 pub async fn sync_file_descriptions(
     main_db: &DatabaseConnection,
     descriptions: &mut [Option<FileDescription>],
+    force: bool,
 ) -> Result<()> {
     debug!("Starting to process multiple files");
 
@@ -79,7 +82,6 @@ pub async fn sync_file_descriptions(
             Some(description) => {
                 debug!("Processing file: {}", description.file_name.clone());
 
-                // Check if the file already exists in the database
                 let existing_file = match media_files::Entity::find()
                     .filter(media_files::Column::Directory.eq(description.directory.clone()))
                     .filter(media_files::Column::FileName.eq(description.file_name.clone()))
@@ -108,7 +110,7 @@ pub async fn sync_file_descriptions(
                     );
 
                     // File exists in the database
-                    if existing_file.last_modified == description.last_modified {
+                    if existing_file.last_modified == description.last_modified && !force {
                         // If the file's last modified date hasn't changed, skip it
                         debug!(
                             "File's last modified date hasn't changed ({}), skipping: {}",
@@ -142,7 +144,7 @@ pub async fn sync_file_descriptions(
                             }
                         };
 
-                        if existing_file.file_hash == new_hash {
+                        if existing_file.file_hash == new_hash && !force {
                             // If the hash is the same, update the last modified date
                             debug!(
                                 "File hash is the same, updating last modified date: {}",
@@ -189,6 +191,10 @@ pub async fn sync_file_descriptions(
                                 continue;
                             }
                         } else {
+                            if force {
+                                info!("Force scanning triggered: {}", existing_file.id);
+                            }
+
                             // If the hash is different, update the metadata
                             debug!(
                                 "File hash is different, updating metadata: {}",
@@ -600,20 +606,22 @@ where
         })
         .collect();
 
-    if let Err(e) = media_metadata::Entity::insert_many(new_metadata)
-        .exec(db)
-        .await
-        .with_context(|| "Failed to insert new metadata")
-    {
-        error!("{:?}", e);
-        insert_log(
-            db,
-            LogLevel::Error,
-            "actions::metadata::update_file_metadata".to_string(),
-            format!("{:#?}", e),
-        )
-        .await?;
-        return Err(e);
+    if !new_metadata.is_empty() {
+        if let Err(e) = media_metadata::Entity::insert_many(new_metadata.clone())
+            .exec(db)
+            .await
+            .with_context(|| "Failed to insert new metadata while executing updating")
+        {
+            error!("{:?}", e);
+            insert_log(
+                db,
+                LogLevel::Error,
+                "actions::metadata::update_file_metadata".to_string(),
+                format!("{:#?}", e),
+            )
+            .await?;
+            return Err(e);
+        }
     }
 
     Ok(())
@@ -795,6 +803,7 @@ pub async fn scan_audio_library<F>(
     main_db: &DatabaseConnection,
     lib_path: &Path,
     cleanup: bool,
+    force: bool,
     progress_callback: F,
     cancel_token: Option<CancellationToken>,
 ) -> Result<usize, sea_orm::DbErr>
@@ -824,11 +833,11 @@ where
         let mut descriptions: Vec<Option<FileDescription>> = files
             .clone()
             .into_iter()
-            .map(|file| describe_file(file.path(), lib_path))
+            .map(|file| describe_file(&file.path().to_path_buf(), &Some(lib_path.to_path_buf())))
             .map(|result| result.ok())
             .collect();
 
-        match sync_file_descriptions(main_db, &mut descriptions)
+        match sync_file_descriptions(main_db, &mut descriptions, force)
             .await
             .with_context(|| "Unable to describe files")
         {
@@ -871,6 +880,12 @@ where
     info!("Audio library scan completed.");
 
     Ok(processed_files)
+}
+
+static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\d+").unwrap());
+
+pub fn extract_number(s: &str) -> Option<i32> {
+    RE.find(s).and_then(|mat| mat.as_str().parse::<i32>().ok())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -929,12 +944,12 @@ pub async fn get_metadata_summary_by_files(
 
         let parsed_disk_number = metadata
             .get("disc_number")
-            .and_then(|s| s.parse::<i32>().ok())
+            .and_then(|s| extract_number(s))
             .unwrap_or(0);
 
         let parsed_track_number = metadata
             .get("track_number")
-            .and_then(|s| s.parse::<i32>().ok())
+            .and_then(|s| extract_number(s))
             .unwrap_or(0);
 
         let track_number = parsed_disk_number * 1000 + parsed_track_number;

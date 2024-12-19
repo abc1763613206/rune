@@ -5,13 +5,17 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, error, info, warn};
+use rodio::source::SeekError;
 use rodio::{Decoder, PlayError, Sink, Source};
 use tokio::sync::mpsc;
 use tokio::time::{interval, sleep_until, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use crate::buffered::rune_buffered;
 use crate::output_stream::{RuneOutputStream, RuneOutputStreamHandle};
+use crate::player::PlayingItem;
 use crate::realtime_fft::RealTimeFFT;
+use crate::shared_source::SharedSource;
 use crate::strategies::{
     AddMode, PlaybackStrategy, RepeatAllStrategy, RepeatOneStrategy, SequentialStrategy,
     ShuffleStrategy, UpdateReason,
@@ -61,7 +65,7 @@ pub enum PlayerCommand {
     Switch(usize),
     Seek(f64),
     AddToPlaylist {
-        tracks: Vec<(i32, std::path::PathBuf)>,
+        tracks: Vec<(PlayingItem, std::path::PathBuf)>,
         mode: AddMode,
     },
     RemoveFromPlaylist {
@@ -75,27 +79,28 @@ pub enum PlayerCommand {
     SetPlaybackMode(PlaybackMode),
     SetVolume(f32),
     SetRealtimeFFTEnabled(bool),
+    SetAdaptiveSwitchingEnabled(bool),
 }
 
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
     Stopped,
     Loaded {
-        id: i32,
+        item: PlayingItem,
         index: usize,
         path: PathBuf,
         playback_mode: PlaybackMode,
         position: Duration,
     },
     Playing {
-        id: i32,
+        item: PlayingItem,
         index: usize,
         path: PathBuf,
         playback_mode: PlaybackMode,
         position: Duration,
     },
     Paused {
-        id: i32,
+        item: PlayingItem,
         index: usize,
         path: PathBuf,
         playback_mode: PlaybackMode,
@@ -103,19 +108,19 @@ pub enum PlayerEvent {
     },
     EndOfPlaylist,
     EndOfTrack {
-        id: i32,
+        item: PlayingItem,
         index: usize,
         path: PathBuf,
         playback_mode: PlaybackMode,
     },
     Error {
-        id: i32,
+        item: PlayingItem,
         index: usize,
         path: PathBuf,
         error: String,
     },
     Progress {
-        id: Option<i32>,
+        item: Option<PlayingItem>,
         index: Option<usize>,
         path: Option<PathBuf>,
         position: Duration,
@@ -123,13 +128,13 @@ pub enum PlayerEvent {
         ready: bool,
     },
     VolumeUpdate(f32),
-    PlaylistUpdated(Vec<i32>),
+    PlaylistUpdated(Vec<PlayingItem>),
     RealtimeFFT(Vec<f32>),
 }
 
 #[derive(Debug, Clone)]
 pub struct PlaylistItem {
-    pub id: i32,
+    pub item: PlayingItem,
     pub path: PathBuf,
 }
 
@@ -146,13 +151,35 @@ fn try_new_sink(stream: &RuneOutputStreamHandle) -> Result<Sink, PlayError> {
     Ok(sink)
 }
 
+impl Source for SharedSource {
+    fn current_frame_len(&self) -> Option<usize> {
+        self.inner.lock().unwrap().current_frame_len()
+    }
+
+    fn channels(&self) -> u16 {
+        self.inner.lock().unwrap().channels()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.inner.lock().unwrap().sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.lock().unwrap().total_duration()
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
+        self.inner.lock().unwrap().try_seek(pos)
+    }
+}
+
 pub(crate) struct PlayerInternal {
     commands: mpsc::UnboundedReceiver<PlayerCommand>,
     event_sender: mpsc::UnboundedSender<PlayerEvent>,
     realtime_fft: Arc<Mutex<RealTimeFFT>>,
     fft_enabled: Arc<Mutex<bool>>,
     playlist: Vec<PlaylistItem>,
-    current_track_id: Option<i32>,
+    current_item: Option<PlayingItem>,
     current_track_index: Option<usize>,
     current_track_path: Option<PathBuf>,
     sink: Option<Sink>,
@@ -166,6 +193,7 @@ pub(crate) struct PlayerInternal {
     stream_error_sender: mpsc::UnboundedSender<String>,
     stream_error_receiver: mpsc::UnboundedReceiver<String>,
     stream_retry_count: usize,
+    adaptive_switching: bool,
 }
 
 impl PlayerInternal {
@@ -179,7 +207,7 @@ impl PlayerInternal {
             commands,
             event_sender,
             playlist: Vec::new(),
-            current_track_id: None,
+            current_item: None,
             current_track_index: None,
             current_track_path: None,
             sink: None,
@@ -195,6 +223,7 @@ impl PlayerInternal {
             stream_error_sender,
             stream_error_receiver,
             stream_retry_count: 0,
+            adaptive_switching: false,
         }
     }
 
@@ -240,6 +269,7 @@ impl PlayerInternal {
                         PlayerCommand::SetPlaybackMode(mode) => self.set_playback_mode(mode),
                         PlayerCommand::SetVolume(volume) => self.set_volume(volume),
                         PlayerCommand::SetRealtimeFFTEnabled(enabled) => self.set_realtime_fft_enabled(enabled),
+                        PlayerCommand::SetAdaptiveSwitchingEnabled(enabled) => self.set_adaptive_switching(enabled),
                     }?;
                 },
                 Ok(fft_data) = fft_receiver.recv() => {
@@ -278,7 +308,7 @@ impl PlayerInternal {
                     } else {
                         error!("Max retry attempts reached, reporting error");
                         self.event_sender.send(PlayerEvent::Error {
-                            id: self.current_track_id.unwrap_or(-1),
+                            item: self.current_item.clone().unwrap_or(PlayingItem::Unknown),
                             index: self.current_track_index.unwrap_or(0),
                             path: self.current_track_path.clone().unwrap_or_default(),
                             error: error_message,
@@ -314,8 +344,15 @@ impl PlayerInternal {
             let item = &self.playlist[mapped_index];
             let file = File::open(item.path.clone())
                 .with_context(|| format!("Failed to open file: {:?}", item.path))?;
-            let source =
-                Decoder::new(BufReader::new(file)).with_context(|| "Failed to decode audio")?;
+            let source = Decoder::new(BufReader::new(file));
+
+            if source.is_err() {
+                self.next()?;
+                return Ok(());
+            }
+
+            let source = SharedSource::new(rune_buffered(source.unwrap()));
+            let source_for_fft = Arc::clone(&source.inner);
 
             let (stream, stream_handle) = RuneOutputStream::try_default_with_callback({
                 let error_sender = self.stream_error_sender.clone();
@@ -345,14 +382,19 @@ impl PlayerInternal {
             });
 
             sink.set_volume(self.volume);
-            sink.append(
-                source.periodic_access(Duration::from_millis(16), move |sample| {
-                    let data: Vec<i16> = sample.take(sample.channels() as usize).collect();
-                    if fft_tx.send(data).is_err() {
-                        error!("Failed to send FFT data");
+            sink.append(source.periodic_access(
+                Duration::from_millis(12),
+                move |_sample: &mut SharedSource| {
+                    if let Ok(guard) = source_for_fft.lock() {
+                        let data: Option<Vec<i16>> = guard.current_samples();
+                        if let Some(data) = data {
+                            if fft_tx.send(data).is_err() {
+                                error!("Failed to send FFT data");
+                            }
+                        }
                     }
-                }),
-            );
+                },
+            ));
 
             if !play {
                 sink.pause();
@@ -361,15 +403,16 @@ impl PlayerInternal {
             self.sink = Some(sink);
             self._stream = Some(stream);
             self.current_track_index = Some(index);
-            self.current_track_id = Some(item.id);
+            self.current_item = Some(item.item.clone());
             self.current_track_path = Some(item.path.clone());
             info!("Track loaded: {:?}", item.path);
 
             if play {
                 self.event_sender
                     .send(PlayerEvent::Playing {
-                        id: self
-                            .current_track_id
+                        item: self
+                            .current_item
+                            .clone()
                             .ok_or(anyhow!("Track id unavailable"))?,
                         index: mapped_index,
                         path: self
@@ -384,8 +427,9 @@ impl PlayerInternal {
             } else {
                 self.event_sender
                     .send(PlayerEvent::Loaded {
-                        id: self
-                            .current_track_id
+                        item: self
+                            .current_item
+                            .clone()
                             .ok_or(anyhow!("Track id unavailable"))?,
                         index: mapped_index,
                         path: self
@@ -412,8 +456,9 @@ impl PlayerInternal {
             if let Some(track_index) = self.current_track_index {
                 let track_index = self.get_mapped_track_index(track_index);
                 self.event_sender.send(PlayerEvent::Playing {
-                    id: self
-                        .current_track_id
+                    item: self
+                        .current_item
+                        .clone()
                         .ok_or(anyhow!("Current track id unavailable"))?,
                     index: track_index,
                     path: self
@@ -444,7 +489,7 @@ impl PlayerInternal {
             if let Some(track_index) = self.current_track_index {
                 let track_index = self.get_mapped_track_index(track_index);
                 self.event_sender.send(PlayerEvent::Paused {
-                    id: self.current_track_id.unwrap(),
+                    item: self.current_item.clone().unwrap_or(PlayingItem::Unknown),
                     index: track_index,
                     path: self.current_track_path.clone().unwrap(),
                     playback_mode: self.playback_mode,
@@ -497,13 +542,32 @@ impl PlayerInternal {
         Ok(())
     }
 
+    fn do_switch_back(&mut self, index: usize) -> Result<()> {
+        if let Some(prev_index) = self.playback_strategy.previous(index, self.playlist.len()) {
+            self.load(Some(prev_index), true, true)
+                .with_context(|| "Failed to load previous track")?;
+        } else {
+            info!("Beginning of playlist reached");
+        }
+
+        Ok(())
+    }
+
     fn previous(&mut self) -> Result<()> {
         if let Some(index) = self.current_track_index {
-            if let Some(prev_index) = self.playback_strategy.previous(index, self.playlist.len()) {
-                self.load(Some(prev_index), true, true)
-                    .with_context(|| "Failed to load previous track")?;
-            } else {
-                info!("Beginning of playlist reached");
+            match &self.sink {
+                Some(sink) => {
+                    let need_adaptive = sink.get_pos() > Duration::from_secs(3);
+
+                    if self.adaptive_switching && need_adaptive {
+                        self.load(Some(index), true, true)
+                            .with_context(|| "Failed to reload track")?;
+                    } else {
+                        return self.do_switch_back(index);
+                    }
+                    return Ok(());
+                }
+                None => return self.do_switch_back(index),
             }
         }
 
@@ -535,22 +599,39 @@ impl PlayerInternal {
                     if let Some(track_index) = self.current_track_index {
                         let track_index = self.get_mapped_track_index(track_index);
 
-                        self.event_sender
-                            .send(PlayerEvent::Playing {
-                                id: self
-                                    .current_track_id
-                                    .ok_or(anyhow!("Current track id unavailable"))?,
-                                index: track_index,
-                                path: self
-                                    .current_track_path
-                                    .clone()
-                                    .ok_or(anyhow!("Current track path unavailable"))?,
-                                playback_mode: self.playback_mode,
-                                position,
-                            })
-                            .with_context(|| "Failed to send Playing event")?;
-
-                        self.state = InternalPlaybackState::Playing;
+                        if self.state == InternalPlaybackState::Playing {
+                            self.event_sender
+                                .send(PlayerEvent::Playing {
+                                    item: self
+                                        .current_item
+                                        .clone()
+                                        .ok_or(anyhow!("Current track id unavailable"))?,
+                                    index: track_index,
+                                    path: self
+                                        .current_track_path
+                                        .clone()
+                                        .ok_or(anyhow!("Current track path unavailable"))?,
+                                    playback_mode: self.playback_mode,
+                                    position,
+                                })
+                                .with_context(|| "Failed to send Playing event")?;
+                        } else {
+                            self.event_sender
+                                .send(PlayerEvent::Paused {
+                                    item: self
+                                        .current_item
+                                        .clone()
+                                        .ok_or(anyhow!("Current track id unavailable"))?,
+                                    index: track_index,
+                                    path: self
+                                        .current_track_path
+                                        .clone()
+                                        .ok_or(anyhow!("Current track path unavailable"))?,
+                                    playback_mode: self.playback_mode,
+                                    position,
+                                })
+                                .with_context(|| "Failed to send Paused event")?;
+                        }
                     }
                 }
                 Err(e) => {
@@ -564,7 +645,7 @@ impl PlayerInternal {
         Ok(())
     }
 
-    fn add_to_playlist(&mut self, tracks: Vec<(i32, std::path::PathBuf)>, mode: AddMode) {
+    fn add_to_playlist(&mut self, tracks: Vec<(PlayingItem, std::path::PathBuf)>, mode: AddMode) {
         debug!("Adding tracks to playlist with mode: {:?}", mode);
         let insert_index = match mode {
             AddMode::PlayNext => {
@@ -582,7 +663,7 @@ impl PlayerInternal {
                 self.playlist.insert(
                     index + i,
                     PlaylistItem {
-                        id: track.0,
+                        item: track.0,
                         path: track.1,
                     },
                 );
@@ -590,7 +671,7 @@ impl PlayerInternal {
         } else {
             self.playlist
                 .extend(tracks.into_iter().map(|track| PlaylistItem {
-                    id: track.0,
+                    item: track.0,
                     path: track.1,
                 }));
         }
@@ -661,7 +742,7 @@ impl PlayerInternal {
     }
 
     fn send_progress(&mut self) -> Result<()> {
-        let id = self.current_track_id;
+        let id = self.current_item.clone();
         let index = self.current_track_index;
         let index = index.map(|x| self.get_mapped_track_index(x));
         let path = self.current_track_path.clone();
@@ -673,7 +754,7 @@ impl PlayerInternal {
             if sink.empty() {
                 self.event_sender
                     .send(PlayerEvent::EndOfTrack {
-                        id: id.unwrap(),
+                        item: id.unwrap(),
                         index: index.unwrap(),
                         path: path.unwrap(),
                         playback_mode,
@@ -686,7 +767,7 @@ impl PlayerInternal {
             } else {
                 self.event_sender
                     .send(PlayerEvent::Progress {
-                        id,
+                        item: id,
                         index,
                         path,
                         playback_mode,
@@ -698,7 +779,7 @@ impl PlayerInternal {
         } else {
             self.event_sender
                 .send(PlayerEvent::Progress {
-                    id,
+                    item: id,
                     index,
                     path,
                     playback_mode,
@@ -761,9 +842,10 @@ impl PlayerInternal {
     }
 
     fn send_playlist_updated(&self) -> Result<()> {
-        let playlist_ids: Vec<i32> = self.playlist.iter().map(|item| item.id).collect();
+        let playlist_items: Vec<PlayingItem> =
+            self.playlist.iter().map(|item| item.item.clone()).collect();
         self.event_sender
-            .send(PlayerEvent::PlaylistUpdated(playlist_ids))
+            .send(PlayerEvent::PlaylistUpdated(playlist_items))
             .with_context(|| "Failed to send PlaylistUpdated event")?;
 
         Ok(())
@@ -785,6 +867,14 @@ impl PlayerInternal {
         if let Ok(mut enabled) = self.fft_enabled.lock() {
             *enabled = x;
         }
+
+        Ok(())
+    }
+
+    fn set_adaptive_switching(&mut self, x: bool) -> Result<()> {
+        self.adaptive_switching = x;
+
+        info!("Adaptive switching status changed: {:#?}", x);
 
         Ok(())
     }

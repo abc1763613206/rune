@@ -1,18 +1,22 @@
 import 'package:fluent_ui/fluent_ui.dart';
 
+import '../../utils/l10n.dart';
 import '../../utils/settings_manager.dart';
 import '../../utils/settings_page_padding.dart';
 import '../../utils/get_non_replace_operate_mode.dart';
+import '../../utils/api/set_adaptive_switching_enabled.dart';
+import '../../widgets/settings/settings_box_scrobble_login.dart';
+import '../../widgets/settings/settings_box_toggle.dart';
 import '../../widgets/unavailable_page_on_band.dart';
 import '../../widgets/settings/settings_block_title.dart';
 import '../../widgets/settings/settings_box_combo_box.dart';
 import '../../widgets/navigation_bar/page_content_frame.dart';
 import '../../widgets/playback_controller/utils/playback_mode.dart';
 import '../../widgets/playback_controller/playback_mode_button.dart';
-import '../../utils/l10n.dart';
 
 const disabledPlaybackModesKey = 'disabled_playback_modes';
 const middleClickActionKey = 'middle_click_action';
+const adaptiveSwitchingKey = 'adaptive_switching';
 
 class SettingsPlayback extends StatefulWidget {
   const SettingsPlayback({super.key});
@@ -25,6 +29,7 @@ class _SettingsPlaybackState extends State<SettingsPlayback> {
   List<PlaybackMode> disabledModes = [];
   String queueMode = "AddToEnd";
   String middleClickAction = "StartPlaying";
+  bool adaptiveSwitching = false;
 
   @override
   void initState() {
@@ -61,6 +66,15 @@ class _SettingsPlaybackState extends State<SettingsPlayback> {
         middleClickAction = storedMiddleClickAction;
       });
     }
+
+    // Load adaptive switching setting
+    bool? storedAdaptiveSwitching =
+        await SettingsManager().getValue<bool>(adaptiveSwitchingKey);
+    if (storedAdaptiveSwitching != null) {
+      setState(() {
+        adaptiveSwitching = storedAdaptiveSwitching;
+      });
+    }
   }
 
   Future<void> _updateDisabledModes(PlaybackMode mode, bool isDisabled) async {
@@ -90,27 +104,38 @@ class _SettingsPlaybackState extends State<SettingsPlayback> {
     await SettingsManager().setValue(middleClickActionKey, newAction);
   }
 
+  Future<void> _updateAdaptiveSwitching(bool newSetting) async {
+    setState(() {
+      adaptiveSwitching = newSetting;
+    });
+    await SettingsManager().setValue(adaptiveSwitchingKey, newSetting);
+    setAdaptiveSwitchingEnabled();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
+
     return PageContentFrame(
       child: UnavailablePageOnBand(
         child: SingleChildScrollView(
           padding: getScrollContainerPadding(context),
           child: SettingsPagePadding(
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 SettingsBoxComboBox(
-                  title: S.of(context).addToQueue,
-                  subtitle: S.of(context).addToQueueSubtitle,
+                  title: s.addToQueue,
+                  subtitle: s.addToQueueSubtitle,
                   value: queueMode,
                   items: [
                     SettingsBoxComboBoxItem(
                       value: "PlayNext",
-                      title: S.of(context).playNext,
+                      title: s.playNext,
                     ),
                     SettingsBoxComboBoxItem(
                       value: "AddToEnd",
-                      title: S.of(context).addToEnd,
+                      title: s.addToEnd,
                     ),
                   ],
                   onChanged: (newValue) {
@@ -120,21 +145,21 @@ class _SettingsPlaybackState extends State<SettingsPlayback> {
                   },
                 ),
                 SettingsBoxComboBox(
-                  title: S.of(context).middleClickAction,
-                  subtitle: S.of(context).middleClickActionSubtitle,
+                  title: s.middleClickAction,
+                  subtitle: s.middleClickActionSubtitle,
                   value: middleClickAction,
                   items: [
                     SettingsBoxComboBoxItem(
                       value: "StartPlaying",
-                      title: S.of(context).startPlaying,
+                      title: s.startPlaying,
                     ),
                     SettingsBoxComboBoxItem(
                       value: "AddToQueue",
-                      title: S.of(context).addToQueue,
+                      title: s.addToQueue,
                     ),
                     SettingsBoxComboBoxItem(
                       value: "StartRoaming",
-                      title: S.of(context).startRoaming,
+                      title: s.startRoaming,
                     ),
                   ],
                   onChanged: (newValue) {
@@ -149,8 +174,8 @@ class _SettingsPlaybackState extends State<SettingsPlayback> {
                     header: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 11),
                       child: SettingsBlockTitle(
-                        title: S.of(context).playbackMode,
-                        subtitle: S.of(context).playbackModeSubtitle,
+                        title: s.playbackMode,
+                        subtitle: s.playbackModeSubtitle,
                       ),
                     ),
                     content: Column(
@@ -171,7 +196,33 @@ class _SettingsPlaybackState extends State<SettingsPlayback> {
                       }).toList(),
                     ),
                   ),
-                )
+                ),
+                SettingsBoxToggle(
+                  title: s.adaptiveSwitching,
+                  subtitle: s.adaptiveSwitchingSubtitle,
+                  value: adaptiveSwitching,
+                  onChanged: _updateAdaptiveSwitching,
+                ),
+                Padding(
+                  padding:
+                      EdgeInsets.only(top: 8, bottom: 2, left: 6, right: 6),
+                  child: Text(s.onlineServices),
+                ),
+                SettingsBoxScrobbleLogin(
+                  title: "Last.fm",
+                  subtitle: s.lastFmSubtitle,
+                  serviceName: 'LastFm',
+                ),
+                SettingsBoxScrobbleLogin(
+                  title: "Libre.fm",
+                  subtitle: s.libreFmSubtitle,
+                  serviceName: 'LibreFm',
+                ),
+                SettingsBoxScrobbleLogin(
+                  title: "ListenBrainz",
+                  subtitle: s.listenBrainzSubtitle,
+                  serviceName: 'ListenBrainz',
+                ),
               ],
             ),
           ),

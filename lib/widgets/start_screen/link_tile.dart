@@ -5,19 +5,20 @@ import '../../widgets/ax_pressure.dart';
 import '../../widgets/tile/tile.dart';
 import '../../widgets/ax_reveal/ax_reveal.dart';
 
-import '../collection_item.dart';
 import 'utils/get_tile_colors.dart';
 
 class LinkTile extends StatelessWidget {
   final String title;
-  final String path;
+  final String? path;
   final IconData icon;
+  final void Function()? onPressed;
 
   const LinkTile({
     super.key,
     required this.title,
-    required this.path,
+    this.path,
     required this.icon,
+    this.onPressed,
   });
 
   @override
@@ -26,28 +27,27 @@ class LinkTile extends StatelessWidget {
 
     final List<Color> colors = getTileColors(theme);
 
-    final brightness = theme.brightness;
-
     return AxPressure(
-      child: AxReveal(
-        config: brightness == Brightness.dark
-            ? defaultLightRevealConfig
-            : defaultDarkRevealConfig,
+      child: AxReveal0(
         child: Tile(
-          onPressed: () {
-            $push(path);
-          },
+          onPressed: onPressed ??
+              () {
+                if (path != null) {
+                  $push(path!);
+                }
+              },
           child: Stack(
             alignment: Alignment.bottomLeft,
             children: [
               Container(
                 color: colors[path.hashCode % colors.length],
                 child: Center(
-                    child: Icon(
-                  icon,
-                  size: 40,
-                  color: Colors.white,
-                )),
+                  child: Icon(
+                    icon,
+                    size: 40,
+                    color: Colors.white,
+                  ),
+                ),
               ),
               Padding(
                 padding: const EdgeInsets.all(6),

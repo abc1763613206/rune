@@ -12,7 +12,7 @@
   "@copyright": {
     "description": "This is the title of an entry that appears in the settings interface under the copyright section."
   },
-  "copyrightAnnouncement": "Copyright © 2024 Rune Player 開発者。",
+  "copyrightAnnouncement": "著作權 © 2024 Rune 再生機開発者。",
   "@copyrightAnnouncement": {
     "description": "The complete copyright statement."
   },
@@ -94,7 +94,7 @@
   },
   "productId": "製品身元確認",
   "@productId": {},
-  "youMayBeAVictimOfGenuineSoftware": "貴方は正銘被害者である可能性があります。",
+  "youMayBeAVictimOfGenuineSoftware": "貴方は正銘被害者かもしれません。",
   "@youMayBeAVictimOfGenuineSoftware": {
     "description": "This phrase is an Easter egg, satirizing how anti-piracy measures often make the experience worse for legitimate users than for those using pirated versions. Feel free to keep it playful."
   },
@@ -160,11 +160,11 @@
   "@addToEnd": {
     "description": "An action that queues a track or album to the end of the playlist."
   },
-  "middleClickAction": "中クリック操作",
+  "middleClickAction": "中押操作",
   "@middleClickAction": {
     "description": "A title in the settings interface controlling the behavior when the user middle-clicks a track or album."
   },
-  "middleClickActionSubtitle": "曲や選集まりを中クリックした際の実行動作。",
+  "middleClickActionSubtitle": "曲や選集まりを中押した際の実行動作。",
   "@middleClickActionSubtitle": {},
   "startPlaying": "再生開始",
   "@startPlaying": {
@@ -208,7 +208,7 @@
   "@followSystemTheme": {
     "description": "An entry in the theme color settings. When enabled, the software's theme color follows the system settings."
   },
-  "dynamicColors": " 変化する色",
+  "dynamicColors": " 動的配色",
   "@dynamicColors": {
     "description": "A color settings entry. When enabled, the software's theme color changes based on the cover art of the currently playing track."
   },
@@ -272,7 +272,7 @@
   "@likedOnly": {
     "description": "An entry in the Mix edit interface, a checkbox option to filter and keep only tracks that the user has 'liked.'"
   },
-  "allTracks": "すべての曲",
+  "allTracks": "全ての曲",
   "@allTracks": {
     "description": "An entry in the Mix edit interface, a checkbox option to filter and keep all tracks, not just those the user has 'liked.'"
   },
@@ -320,7 +320,7 @@
   "@noRecommendation": {
     "description": "An entry in the Mix edit modal dropdown. Selecting this option indicates the user's intent not to base recommendations on query results."
   },
-  "basedOnAll": "すべてに基づく",
+  "basedOnAll": "全てに基づく",
   "@basedOnAll": {
     "description": "An entry in the Mix edit modal dropdown. Selecting this option recommends similar tracks based on the entire set of query results."
   },
@@ -389,7 +389,7 @@
   "@directories": {
     "description": "A title for an entry in the modal settings options, informing users that the following options are for filtering tracks by folder."
   },
-  "allDirectories": "すべての格納場所",
+  "allDirectories": "全ての格納場所",
   "@allDirectories": {
     "description": "Prompt indicating that all directories have been selected."
   },
@@ -527,7 +527,7 @@
   "@coverWall": {
     "description": "Button prompt text for controlling playback, used to switch to the cover wall page, a decorative page composed of album covers."
   },
-  "coverWallSubtitle": "独自の雰囲気を演出するため、表紙画像を表示します",
+  "coverWallSubtitle": "表紙画像を表示して、特別な雰囲気を楽しめます",
   "@coverWallSubtitle": {},
   "fullscreen": "全画面",
   "@fullscreen": {
@@ -591,7 +591,7 @@
   "@about": {
     "description": "Title of the about interface."
   },
-  "selectLibraryDirectorySubtitle": "資料集の格納場所を選択し、すべての曲を検査および解析します。",
+  "selectLibraryDirectorySubtitle": "資料集の格納場所を選択し、全ての曲を検査および解析します。",
   "@selectLibraryDirectorySubtitle": {},
   "resetLibrary": "資料集を初期化",
   "@resetLibrary": {
@@ -865,7 +865,7 @@
   "@libraryMode": {
     "description": "The title of a modal, which guides user to select where to store the database"
   },
-  "libraryModeSubtitle": "資料集についてもう少し詳しく教えてください。あなたの資料保管場所は雲上に保存されていますか？",
+  "libraryModeSubtitle": "資料集についてもう少し詳しく教えてください。あなたの資料保存先は雲上に保存されていますか？",
   "@libraryModeSubtitle": {
     "description": "The subtitle of a modal, which guides user to select where to store the database"
   },
@@ -881,8 +881,98 @@
   "@localMode": {
     "description": "One candidate library mode for users"
   },
-  "localModeSubtitle": "あなたの資料索引を Rune の設定用配置場所に保存します。",
+  "localModeSubtitle": "あなたの資料索引を Rune の設定保存先に保存します。",
   "@localModeSubtitle": {
     "description": "The subtitle of the candidate library mode for users"
-  }
+  },
+  "rememberWindowSize": "窓の形態を記憶する",
+  "@rememberWindowSize": {
+    "description": "Title of a setting option in the theme page"
+  },
+  "rememberWindowSizeSubtitle": "調整した窓の形態を保存し、次回は同じ形態で Rune を起動します。",
+  "@rememberWindowSizeSubtitle": {
+    "description": "The subtitle of a setting option in the theme page"
+  },
+  "closeNotification": "Rune はまだ運行中",
+  "@closeNotification": {
+    "description": "The notification is popped up while user closed the window"
+  },
+  "closeNotificationSubtitle": "Rune は現在裏で動作しています。系統の通知領域で簡単に見つけることができます。",
+  "@closeNotificationSubtitle": {
+    "description": ""
+  },
+  "register": "登録",
+  "@register": {
+    "description": "Title of the register tile in the settings page"
+  },
+  "evaluationModeContent4": "下記の商店から鍵音楽を購入することで、登録の証明として使用できます。「登録」を押れて、認証済み使用者であることを確認してください。",
+  "@evaluationModeContent4" : {
+    "description": "Content of the evaluation mode modal"
+  },
+  "registerAction": "登録",
+  "@registerAction": {
+    "description": "The label of the register button in a modal"
+  },
+  "registerFailed": "失敗しました",
+  "@registerFailed": {
+    "description": "The title of the register failed modal"
+  },
+  "registerFailedSubtitle": "確認過程で不具合が発生しました。",
+  "@registerFailedSubtitle": {
+    "description": "The content of the register failed modal"
+  },
+  "registerSuccess": "完成しました",
+  "@registerSuccess": {
+    "description": "The title of the register success modal"
+  },
+  "registerSuccessSubtitle": "おめでとうございます！登録が無事に完了しました。Rune をお選びいただき、ありがとうございます。",
+  "@registerSuccessSubtitle": {
+    "description": "The content of the register success modal"
+  },
+  "registerInvalid": "無効な鍵",
+  "@registerInvalid": {
+    "description": "The title of the invalid register key modal"
+  },
+  "registerInvalidSubtitle": "提供された鍵音楽は無効です。鍵音楽を確認し、再度お試しください。",
+  "@registerInvalidSubtitle": {
+    "description": "The content of the invalid register key modal"
+  },
+  "importM3u8Success": "一部成功",
+  "@importM3u8Success": {
+    "description": "The title of the partially import success modal"
+  },
+  "importM3u8SuccessSubtitle": "曲の取り込みが完了しましたが、一部の曲が見つかりませんでした。",
+  "@importM3u8SuccessSubtitle": {
+    "description": "The content of the partially import success modal"
+  },
+  "importM3u8Failed": "導入失敗",
+  "@importM3u8Failed": {
+    "description": "The title of the import failed modal"
+  },
+  "importM3u8FailedSubtitle": "導入過程で誤りが発生しました。",
+  "@importM3u8FailedSubtitle": {
+    "description": "The content of the import failed modal"
+  },
+  "importM3u8": "再生一覧表を導入",
+  "@importM3u8": {
+    "description": "Context menu item guiding users to import a new playlist."
+  },
+  "adaptiveSwitching": "自適応切替え",
+  "@adaptiveSwitching": {
+    "description": "Settings title of an entry in the playback settings page"
+  },
+  "adaptiveSwitchingSubtitle": "現在の曲が三秒以上再生された後に戻ると、最初から再生が始まります。",
+  "@adaptiveSwitchingSubtitle": {
+    "description": "Settings description of an entry in the playback settings page"
+  },
+  "considerPurchase": "ぜひ正銘の許可をお求めください。",
+  "@considerPurchase": {
+    "description": "Notice in the about page, guiding user to purchase a license"
+  },
+  "lyrics": "歌詞",
+  "@lyrics": {
+    "description": "Button prompt text for controlling playback, used to switch to the lyrics page."
+  },
+  "lyricsSubtitle": "歌詞の全容を掲載する",
+  "@lyricsSubtitle": {}
 }
