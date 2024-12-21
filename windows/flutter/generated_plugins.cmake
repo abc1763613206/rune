@@ -4,13 +4,15 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   bitsdojo_window_windows
+  desktop_drop
   file_selector_windows
   flutter_acrylic
   flutter_window_close
+  local_notifier
   permission_handler_windows
   screen_retriever_windows
   system_theme
-  tray_manager
+  system_tray
   url_launcher_windows
   window_manager
 )

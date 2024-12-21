@@ -860,5 +860,167 @@
   "laboratory": "試",
   "@laboratory": {
     "description": "The title of a link title"
+  },
+  "libraryMode": "立庫",
+  "@libraryMode": {
+    "description": "The title of a modal, which guides user to select where to store the database"
+  },
+  "libraryModeSubtitle": "須略更曉，子之曲目置於何處？",
+  "@libraryModeSubtitle": {
+    "description": "The subtitle of a modal, which guides user to select where to store the database"
+  },
+  "portableMode": "本地",
+  "@portableMode": {
+    "description": "One candidate library mode for users"
+  },
+  "portableModeSubtitle": "將置曲目索引於庫夾中。",
+  "@portableModeSubtitle": {
+    "description": "The subtitle of the candidate library mode for users"
+  },
+  "localMode": "雲端",
+  "@localMode": {
+    "description": "One candidate library mode for users"
+  },
+  "localModeSubtitle": "將置曲目索引於符聆配置之徑。",
+  "@localModeSubtitle": {
+    "description": "The subtitle of the candidate library mode for users"
+  },
+  "rememberWindowSize": "記窗幅",
+  "@rememberWindowSize": {
+    "description": "Title of a setting option in the theme page"
+  },
+  "rememberWindowSizeSubtitle": "即調隨記，復啟不改。",
+  "@rememberWindowSizeSubtitle": {
+    "description": "The subtitle of a setting option in the theme page"
+  },
+  "closeNotification": "符聆尚作",
+  "@closeNotification": {
+    "description": "The notification is popped up while user closed the window"
+  },
+  "closeNotificationSubtitle": "隱於後台，系統匣中覓。",
+  "@closeNotificationSubtitle": {
+    "description": ""
+  },
+  "register": "登",
+  "@register": {
+    "description": "Title of the register tile in the settings page"
+  },
+  "evaluationModeContent4": "可訪市如下列，購曲為鑰。擊「登」以驗。",
+  "@evaluationModeContent4": {
+    "description": "Content of the evaluation mode modal"
+  },
+  "registerAction": "登",
+  "@registerAction": {
+    "description": "The label of the register button in a modal"
+  },
+  "registerFailed": "未果",
+  "@registerFailed": {
+    "description": "The title of the register failed modal"
+  },
+  "registerFailedSubtitle": "謬遇於驗。",
+  "@registerFailedSubtitle": {
+    "description": "The content of the register failed modal"
+  },
+  "registerSuccess": "成",
+  "@registerSuccess": {
+    "description": "The title of the register success modal"
+  },
+  "registerSuccessSubtitle": "喜賀焉哉！登簿告成。惠擇符聆，躬謝垂青。",
+  "@registerSuccessSubtitle": {
+    "description": "The content of the register success modal"
+  },
+  "registerInvalid": "無效鑰",
+  "@registerInvalid": {
+    "description": "The title of the invalid register key modal"
+  },
+  "registerInvalidSubtitle": "擇之鑰無效。請驗而再試。",
+  "@registerInvalidSubtitle": {
+    "description": "The content of the invalid register key modal"
+  },
+  "importM3u8Success": "半成",
+  "@importM3u8Success": {
+    "description": "The title of the partially import success modal"
+  },
+  "importM3u8SuccessSubtitle": "或曲未得。",
+  "@importM3u8SuccessSubtitle": {
+    "description": "The content of the partially import success modal"
+  },
+  "importM3u8Failed": "入錄未果",
+  "@importM3u8Failed": {
+    "description": "The title of the import failed modal"
+  },
+  "importM3u8FailedSubtitle": "入中遇謬。",
+  "@importM3u8FailedSubtitle": {
+    "description": "The content of the import failed modal"
+  },
+  "importM3u8": "入錄",
+  "@importM3u8": {
+    "description": "Context menu item guiding users to import a new playlist."
+  },
+  "adaptiveSwitching": "更易隨適",
+  "@adaptiveSwitching": {
+    "description": "Settings title of an entry in the playback settings page"
+  },
+  "adaptiveSwitchingSubtitle": "逾三息则擊前復始。",
+  "@adaptiveSwitchingSubtitle": {
+    "description": "Settings description of an entry in the playback settings page"
+  },
+  "considerPurchase": "望君購執。",
+  "@considerPurchase": {
+    "description": "Notice in the about page, guiding user to purchase a license"
+  },
+  "lyrics": "詞",
+  "@lyrics": {
+    "description": "Button prompt text for controlling playback, used to switch to the lyrics page."
+  },
+  "lyricsSubtitle": "展曲全詞",
+  "@lyricsSubtitle": {},
+  "onlineServices": "遙供他務",
+  "@onlineServices": {
+    "description": "A chapter title in the playback settings page."
+  },
+  "login": "籍名",
+  "@login": {
+    "description": "The action button of the login modal."
+  },
+  "loginFailed": "籍名未果",
+  "@loginFailed": {
+    "description": "The title of the login failed button of the login modal."
+  },
+  "loginFailedSubtitle": "籍時遇謬",
+  "@loginFailedSubtitle": {
+    "description": "The subtitle of the login failed button of the login modal."
+  },
+  "lastFmSubtitle": "知聆曉跡，悉聞賞趣。",
+  "@lastFmSubtitle": {
+    "description": "The service description of the scrobble service."
+  },
+  "libreFmSubtitle": "於自由之地舒表曲志。",
+  "@libreFmSubtitle": {
+    "description": "The service description of the scrobble service."
+  },
+  "listenBrainzSubtitle": "循轍時助築開源之庫。",
+  "@listenBrainzSubtitle": {
+    "description": "The service description of the scrobble service."
+  },
+  "fix": "繕",
+  "@fix": {
+    "description": "The action button of the service login failed settings item."
+  },
+  "confirmLogoutTitle": "確出",
+  "@confirmLogoutTitle": {
+    "description": "Title for the logout confirmation dialog."
+  },
+  "confirmLogoutSubtitle": "誠欲籍出？儲據將棄。",
+  "@confirmLogoutSubtitle": {
+    "description": "Subtitle for the logout confirmation dialog."
+  },
+  "retryLogin": "再籍",
+  "@retryLogin": {
+    "description": "Option to retry login in the error options menu."
+  },
+  "logout": "出籍",
+  "@logout": {
+    "description": "Option to log out in the error options menu."
   }
 }

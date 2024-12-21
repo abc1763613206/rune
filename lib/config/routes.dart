@@ -7,6 +7,7 @@ import '../utils/router/query_tracks_parameter.dart';
 import '../routes/home.dart' as home;
 import '../routes/mixes.dart' as mixes;
 import '../routes/tracks.dart' as tracks;
+import '../routes/lyrics.dart' as lyrics;
 import '../routes/search.dart' as search;
 import '../routes/welcome.dart' as welcome;
 import '../routes/settings.dart' as settings;
@@ -102,12 +103,12 @@ final Map<String, WidgetBuilder> routes = {
   '/settings/playback': (context) => const settings.SettingsPlayback(),
   '/settings/log': (context) => const settings.SettingsLogPage(),
   '/settings/about': (context) => const settings.SettingsAboutPage(),
-  '/settings/test': (context) => const settings.SettingsTestPage(),
+  // '/settings/test': (context) => const settings.SettingsTestPage(),
   '/settings/library_home': (context) => const settings.SettingsLibraryHome(),
   '/settings/media_controller': (context) =>
       const settings.SettingsMediaControllerPage(),
-  '/settings/laboratory': (context) =>
-      const settings.SettingsLaboratory(),
+  '/settings/laboratory': (context) => const settings.SettingsLaboratory(),
   '/search': (context) => const search.SearchPage(),
   '/cover_wall': (context) => const cover_wall.CoverWallPage(),
+  '/lyrics': (context) => const lyrics.LyricsPage(),
 };

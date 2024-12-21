@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
+import '../../widgets/band_screen_fallback_button.dart';
 import '../../providers/responsive_providers.dart';
 
 class UnavailableDialogOnBand extends StatelessWidget {
@@ -33,7 +34,7 @@ class UnavailableDialogOnBand extends StatelessWidget {
           return Center(
             child: LayoutBuilder(
               builder: (context, constraint) {
-                return IconButton(
+                return BandScreenFallbackButton(
                   icon: Icon(
                     icon ?? Symbols.devices,
                     size: (min(constraint.maxWidth, constraint.maxHeight) * 0.8)

@@ -3,6 +3,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
 import '../../utils/fetch_flyout_items.dart';
+import '../../utils/is_cover_art_wall_layout.dart';
 import '../../utils/unavailable_menu_entry.dart';
 import '../../widgets/ax_reveal/ax_reveal.dart';
 import '../../widgets/playback_controller/constants/controller_items.dart';
@@ -10,7 +11,7 @@ import '../../providers/status.dart';
 import '../../providers/router_path.dart';
 import '../../providers/playback_controller.dart';
 import '../../providers/responsive_providers.dart';
-import '../collection_item.dart';
+import '../rune_icon_button.dart';
 
 class ControllerButtons extends StatefulWidget {
   const ControllerButtons({super.key});
@@ -68,11 +69,9 @@ class _ControllerButtonsState extends State<ControllerButtons> {
 
     final coverArtWallLayout = Provider.of<ResponsiveProvider>(context)
             .smallerOrEqualTo(DeviceType.phone) &&
-        path == '/cover_wall';
+        isCoverArtWallLayout(path);
 
     final miniEntries = [controllerItems[1], controllerItems[2]];
-
-    final brightness = FluentTheme.of(context).brightness;
 
     Provider.of<PlaybackStatusProvider>(context);
 
@@ -94,21 +93,15 @@ class _ControllerButtonsState extends State<ControllerButtons> {
             : visibleEntries)
           Tooltip(
             message: entry.tooltipBuilder(context),
-            child: AxReveal(
-              config: brightness == Brightness.dark
-                  ? defaultLightRevealConfig
-                  : defaultDarkRevealConfig,
+            child: AxReveal0(
               child: entry.controllerButtonBuilder(context, null),
             ),
           ),
         if (hiddenEntries.isNotEmpty)
           FlyoutTarget(
             controller: menuController,
-            child: AxReveal(
-              config: brightness == Brightness.dark
-                  ? defaultLightRevealConfig
-                  : defaultDarkRevealConfig,
-              child: IconButton(
+            child: AxReveal0(
+              child: RuneIconButton(
                 icon: const Icon(Symbols.more_vert),
                 onPressed: () async {
                   await _fetchFlyoutItems(Localizations.localeOf(context));
@@ -118,7 +111,9 @@ class _ControllerButtonsState extends State<ControllerButtons> {
                       return Container(
                         constraints: const BoxConstraints(maxWidth: 200),
                         child: MenuFlyout(
-                          items: hiddenEntries
+                          items: ((miniLayout && !coverArtWallLayout)
+                                  ? entries
+                                  : hiddenEntries)
                               .map(
                                 (x) =>
                                     flyoutItems[x.id] ??

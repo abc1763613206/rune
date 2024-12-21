@@ -2,9 +2,10 @@ import 'dart:ui';
 
 import 'package:fluent_ui/fluent_ui.dart';
 
-import '../../utils/execute_middle_click_action.dart';
 import '../../utils/query_list.dart';
 import '../../utils/format_time.dart';
+import '../../utils/playing_item.dart';
+import '../../utils/execute_middle_click_action.dart';
 import '../../utils/api/operate_playback_with_mix_query.dart';
 import '../../utils/context_menu/track_item_context_menu.dart';
 import '../../widgets/context_menu_wrapper.dart';
@@ -12,7 +13,6 @@ import '../../widgets/track_list/utils/internal_media_file.dart';
 import '../../widgets/navigation_bar/utils/activate_link_action.dart';
 import '../../messages/all.dart';
 
-import '../collection_item.dart';
 import '../tile/cover_art.dart';
 import '../ax_reveal/ax_reveal.dart';
 
@@ -69,7 +69,8 @@ class _SmallScreenTrackListItemState extends State<SmallScreenTrackListItem> {
       initialPlaybackId: widget.item.id,
       operateMode: PlaylistOperateMode.Replace,
       instantlyPlay: true,
-      fallbackFileIds: widget.fallbackFileIds,
+      fallbackPlayingItems:
+          widget.fallbackFileIds.map(PlayingItem.inLibrary).toList(),
     );
   }
 
@@ -170,10 +171,7 @@ class _SmallScreenTrackListItemState extends State<SmallScreenTrackListItem> {
                               ),
                             ],
                           ),
-                          child: AxReveal(
-                            config: theme.brightness == Brightness.dark
-                                ? defaultLightRevealConfig
-                                : defaultDarkRevealConfig,
+                          child: AxReveal0(
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(4),
                               child: CoverArt(

@@ -13,6 +13,9 @@ import '../../widgets/navigation_bar/navigation_back_button.dart';
 import '../../providers/router_path.dart';
 import '../../providers/responsive_providers.dart';
 
+import '../ax_reveal/ax_reveal.dart';
+import '../rune_icon_button.dart';
+
 import 'parent_link.dart';
 import 'slibing_link.dart';
 import 'flip_animation_manager.dart';
@@ -102,12 +105,15 @@ class NavigationBarState extends State<NavigationBar> {
 
         final titleFlipKey = 'title:${parent?.path}';
 
+        final viewPadding = MediaQuery.of(context).viewPadding;
+
         late Widget parentWidget = SmallerOrEqualTo(
             deviceType: DeviceType.fish,
             builder: (context, isFish) {
               if (isFish) {
-                return const Padding(
-                  padding: EdgeInsetsDirectional.only(top: 20),
+                return Padding(
+                  padding:
+                      EdgeInsetsDirectional.only(top: 20 + viewPadding.top),
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: SizedBox(
@@ -187,7 +193,10 @@ class NavigationBarState extends State<NavigationBar> {
           children: [
             if (isZune || !isSearch)
               Transform.translate(
-                offset: const Offset(0, -40),
+                offset: Offset(
+                  0 + viewPadding.left,
+                  -44 + viewPadding.top,
+                ),
                 child: Padding(
                   padding: Platform.isMacOS
                       ? const EdgeInsets.only(left: 24)
@@ -196,26 +205,29 @@ class NavigationBarState extends State<NavigationBar> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       mainAxisSize: MainAxisSize.max,
-                      children: [
-                        parentWidget,
-                        childrenWidget
-                      ],
+                      children: [parentWidget, childrenWidget],
                     ),
                   ),
                 ),
               ),
             if (!isZune && !Platform.isWindows)
               Positioned(
-                top: 16,
-                right: 16,
-                child: IconButton(
-                  icon: Icon(
-                    isSearch ? Symbols.close : Symbols.search,
-                    size: 24,
+                top: 16 + viewPadding.top,
+                right: 16 + viewPadding.right,
+                child: AxReveal0(
+                  child: RuneIconButton(
+                    icon: Icon(
+                      isSearch ? Symbols.close : Symbols.search,
+                      size: 24,
+                    ),
+                    onPressed: () {
+                      if (isSearch) {
+                        escapeFromSearch();
+                      } else {
+                        $push('/search');
+                      }
+                    },
                   ),
-                  onPressed: () => {
-                    if (isSearch) {escapeFromSearch()} else {$push('/search')}
-                  },
                 ),
               ),
           ],

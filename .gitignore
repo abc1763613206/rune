@@ -149,3 +149,5 @@ result
 temp_macos/
 /.env
 Output/Rune.exe
+*.afdesign~lock~
+profile.json

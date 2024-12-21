@@ -3,18 +3,53 @@ import 'dart:io';
 import 'package:provider/provider.dart';
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:file_selector/file_selector.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:material_symbols_icons/material_symbols_icons.dart';
 
+import '../../../utils/l10n.dart';
 import '../../../utils/ax_shadow.dart';
+import '../../../utils/get_dir_path.dart';
 import '../../../utils/dialogs/failed_to_initialize_library.dart';
+import '../../../widgets/band_screen_fallback_button.dart';
 import '../../../providers/library_path.dart';
 import '../../../providers/library_manager.dart';
 import '../../../providers/responsive_providers.dart';
-import '../../../utils/l10n.dart';
 
 class WelcomePage extends StatelessWidget {
   const WelcomePage({super.key});
+
+  selectDirectory(BuildContext context) async {
+    final libraryPath =
+        Provider.of<LibraryPathProvider>(context, listen: false);
+    final libraryManager =
+        Provider.of<LibraryManagerProvider>(context, listen: false);
+    // on Android, check for permission
+    if (!await requestAndroidPermission()) return;
+
+    final path = await getDirPath();
+
+    if (path == null) return;
+    if (!context.mounted) return;
+
+    final (success, cancelled, error) = await libraryPath.setLibraryPath(
+      context,
+      path,
+      null,
+    );
+
+    if (success) {
+      libraryManager.scanLibrary(
+        path,
+        isInitializeTask: true,
+      );
+    } else if (!cancelled) {
+      if (!context.mounted) return;
+      await showFailedToInitializeLibrary(
+        context,
+        error,
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -22,10 +57,14 @@ class WelcomePage extends StatelessWidget {
 
     final r = Provider.of<ResponsiveProvider>(context);
 
-    final libraryPath =
-        Provider.of<LibraryPathProvider>(context, listen: false);
-    final libraryManager =
-        Provider.of<LibraryManagerProvider>(context, listen: false);
+    if (r.smallerOrEqualTo(DeviceType.dock, false)) {
+      return Center(
+        child: BandScreenFallbackButton(
+          icon: Icon(Symbols.folder_open),
+          onPressed: () => selectDirectory(context),
+        ),
+      );
+    }
 
     return Center(
       child: ConstrainedBox(
@@ -60,7 +99,8 @@ class WelcomePage extends StatelessWidget {
                           : const SizedBox(height: 20),
                       Column(
                         children: [
-                          if (!r.smallerOrEqualTo(DeviceType.band, false))
+                          if (!r.smallerOrEqualTo(DeviceType.band, false) &&
+                              !r.smallerOrEqualTo(DeviceType.zune, false))
                             Padding(
                               padding:
                                   const EdgeInsets.symmetric(horizontal: 24),
@@ -72,35 +112,12 @@ class WelcomePage extends StatelessWidget {
                             ),
                           r.smallerOrEqualTo(DeviceType.car, false)
                               ? const SizedBox(height: 20)
-                              : const SizedBox(height: 56),
+                              : r.smallerOrEqualTo(DeviceType.zune, false)
+                                  ? const SizedBox(height: 12)
+                                  : const SizedBox(height: 56),
                           FilledButton(
                             child: Text(S.of(context).selectDirectory),
-                            onPressed: () async {
-                              // on Android, check for permission
-                              if (!await requestAndroidPermission()) return;
-
-                              final path = await getDirectoryPath();
-
-                              if (path == null) return;
-                              if (!context.mounted) return;
-
-                              final (success, cancelled, error) =
-                                  await libraryPath.setLibraryPath(
-                                context,
-                                path,
-                                null,
-                              );
-
-                              if (success) {
-                                libraryManager.scanLibrary(path, true);
-                              } else if (!cancelled) {
-                                if (!context.mounted) return;
-                                await showFailedToInitializeLibrary(
-                                  context,
-                                  error,
-                                );
-                              }
-                            },
+                            onPressed: () => selectDirectory(context),
                           ),
                         ],
                       ),
@@ -110,6 +127,7 @@ class WelcomePage extends StatelessWidget {
                 if (!r.smallerOrEqualTo(DeviceType.belt, false))
                   Text(
                     S.of(context).copyrightAnnouncement,
+                    textAlign: TextAlign.center,
                     style: theme.typography.caption
                         ?.apply(color: theme.inactiveColor.withAlpha(80)),
                   ),

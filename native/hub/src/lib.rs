@@ -1,17 +1,21 @@
 mod analyze;
+mod apple_bridge;
 mod collection;
 mod connection;
 mod cover_art;
 mod directory;
 mod library_home;
 mod library_manage;
+mod license;
 mod logging;
+mod lyric;
 mod media_file;
 mod messages;
 mod mix;
 mod playback;
 mod player;
 mod playlist;
+mod scrobble;
 mod search;
 mod sfx;
 mod stat;
@@ -19,8 +23,10 @@ mod system;
 mod utils;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
+use license::validate_license_request;
 use log::{debug, error, info};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -31,6 +37,7 @@ pub use tokio;
 
 use ::playback::player::Player;
 use ::playback::sfx_player::SfxPlayer;
+use ::scrobbling::manager::ScrobblingManager;
 
 use crate::analyze::*;
 use crate::collection::*;
@@ -39,13 +46,16 @@ use crate::cover_art::*;
 use crate::directory::*;
 use crate::library_home::*;
 use crate::library_manage::*;
+use crate::license::*;
 use crate::logging::*;
+use crate::lyric::*;
 use crate::media_file::*;
 use crate::messages::*;
 use crate::mix::*;
 use crate::playback::*;
 use crate::player::initialize_player;
 use crate::playlist::*;
+use crate::scrobble::*;
 use crate::search::*;
 use crate::sfx::*;
 use crate::stat::*;
@@ -115,13 +125,20 @@ async fn player_loop(path: String, db_connections: DatabaseConnections) {
         let player = Player::new(Some(main_cancel_token.clone()));
         let player = Arc::new(Mutex::new(player));
 
+        let scrobbler = ScrobblingManager::new(10, Duration::new(5, 0));
+        let scrobbler = Arc::new(Mutex::new(scrobbler));
+
         let sfx_player = SfxPlayer::new(Some(main_cancel_token.clone()));
         let sfx_player = Arc::new(Mutex::new(sfx_player));
 
         let main_cancel_token = Arc::new(main_cancel_token);
 
         info!("Initializing Player events");
-        tokio::spawn(initialize_player(main_db.clone(), player.clone()));
+        tokio::spawn(initialize_player(
+            main_db.clone(),
+            player.clone(),
+            scrobbler.clone(),
+        ));
 
         info!("Initializing UI events");
         select_signal!(
@@ -145,6 +162,7 @@ async fn player_loop(path: String, db_connections: DatabaseConnections) {
             SetPlaybackModeRequest => (player),
             MovePlaylistItemRequest => (player),
             SetRealtimeFftEnabledRequest => (player),
+            SetAdaptiveSwitchingEnabledRequest => (player),
 
             SfxPlayRequest => (sfx_player),
 
@@ -156,6 +174,8 @@ async fn player_loop(path: String, db_connections: DatabaseConnections) {
             FetchParsedMediaFileRequest => (main_db, lib_path),
             SearchMediaFileSummaryRequest => (main_db),
 
+            GetLyricByTrackIdRequest => (lib_path, main_db),
+
             FetchCollectionGroupSummaryRequest => (main_db, recommend_db),
             FetchCollectionGroupsRequest => (main_db, recommend_db),
             FetchCollectionByIdsRequest => (main_db, recommend_db),
@@ -166,6 +186,7 @@ async fn player_loop(path: String, db_connections: DatabaseConnections) {
 
             FetchAllPlaylistsRequest => (main_db),
             CreatePlaylistRequest => (main_db),
+            CreateM3u8PlaylistRequest => (main_db),
             UpdatePlaylistRequest => (main_db),
             RemovePlaylistRequest => (main_db),
             AddItemToPlaylistRequest => (main_db),
@@ -190,11 +211,17 @@ async fn player_loop(path: String, db_connections: DatabaseConnections) {
 
             FetchDirectoryTreeRequest => (main_db),
 
+            AuthenticateSingleServiceRequest => (scrobbler),
+            AuthenticateMultipleServiceRequest => (scrobbler),
+            LogoutSingleServiceRequest => (scrobbler),
+
             ListLogRequest => (main_db),
             ClearLogRequest => (main_db),
             RemoveLogRequest => (main_db),
 
             SystemInfoRequest => (main_db),
+            RegisterLicenseRequest => (main_db),
+            ValidateLicenseRequest => (main_db),
         );
     });
 }
