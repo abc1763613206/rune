@@ -72,16 +72,18 @@
 //! Here's how to implement the required traits for an example entity `my_table`:
 //!
 //! ```rust
+//! # use std::str::FromStr;
+//!
 //! # // Mock structures to make the example compile standalone
 //! # use sea_orm::{entity::prelude::*, ConnectionTrait, DbErr, DeleteResult, ExecResult, InsertResult, UpdateResult, ActiveModelBehavior, ActiveValue, Set, Unchanged, QueryFilter, Condition, IntoActiveModel};
 //! # use serde::{Serialize, Deserialize};
 //! # use uuid::Uuid;
-//! # use crate::hlc::{HLC, HLCRecord, HLCModel};
-//! # use crate::core::{PrimaryKeyFromStr}; // Reference the trait from the same file/module
 //! # use anyhow::{Result, Context, anyhow};
-//! # use std::str::FromStr;
+//! #
+//! # use sync::hlc::{HLC, HLCRecord, HLCModel};
+//! # use sync::core::{PrimaryKeyFromStr};
 //!
-//! #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+//! #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
 //! #[sea_orm(table_name = "my_table")]
 //! pub struct Model {
 //!     #[sea_orm(primary_key)]
@@ -100,7 +102,7 @@
 //! #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 //! pub enum Relation {}
 //!
-//! // --- 1. HLCRecord Implementation (for Model) ---
+//! // 1. HLCRecord Implementation (for Model)
 //! /// Purpose: Provides access to HLC timestamps, a unique ID (string), and
 //! ///          data representation for hashing and serialization required by the sync logic.
 //! impl HLCRecord for Model {
@@ -150,10 +152,10 @@
 //!     // otherwise they default to data_for_hashing().
 //! }
 //!
-//! // --- Boilerplate SeaORM ActiveModelBehavior ---
+//! // Boilerplate SeaORM ActiveModelBehavior
 //! impl ActiveModelBehavior for ActiveModel {}
 //!
-//! // --- 2. HLCModel Implementation (for Entity) ---
+//! // 2. HLCModel Implementation (for Entity)
 //! /// Purpose: Provides SeaORM Column definitions for HLC-related fields,
 //! ///          allowing the sync logic to build database queries dynamically.
 //! impl HLCModel for Entity {
@@ -183,7 +185,7 @@
 //!     // removing the `hlc_timestamp_millis_to_rfc3339` conversion. ***
 //! }
 //!
-//! // --- 3. PrimaryKeyFromStr Implementation (for Entity::PrimaryKey) ---
+//! // 3. PrimaryKeyFromStr Implementation (for Entity::PrimaryKey)
 //! /// Purpose: Converts the string representation of the primary key (from `HLCRecord::unique_id`)
 //! ///          back into the actual SeaORM primary key type (`ValueType`) required for database
 //! ///          operations like update and delete.
@@ -200,36 +202,6 @@
 //!     }
 //! }
 //!
-//! // --- 4. IntoActiveModel Implementation (for Model) ---
-//! /// Purpose: Converts a `Model` instance (e.g., read from DB or received from remote)
-//! ///          into an `ActiveModel` suitable for SeaORM insert or update operations.
-//! impl IntoActiveModel<ActiveModel> for Model {
-//!     fn into_active_model(self) -> ActiveModel {
-//!         ActiveModel {
-//!             // For updates, the primary key should typically be Unchanged
-//!             // or Set if you know it's correct. For inserts, it's often Default or NotSet.
-//!             // If using `update_many().set(active_model)`, PK is usually ignored here
-//!             // and filtering happens via `.filter()`.
-//!             // If using `insert()`, PK should be NotSet/Default if auto-incrementing.
-//!             // Let's assume it's for an update where PK is used for filtering later:
-//!             id: Unchanged(self.id),
-//!             // Wrap fields to be updated/inserted in Set()
-//!             data: Set(self.data),
-//!             other_field: Set(self.other_field),
-//!             // Include HLC fields if they need to be set/updated
-//!             created_at_hlc_ts: Set(self.created_at_hlc_ts),
-//!             created_at_hlc_ct: Set(self.created_at_hlc_ct),
-//!             created_at_hlc_id: Set(self.created_at_hlc_id),
-//!             updated_at_hlc_ts: Set(self.updated_at_hlc_ts),
-//!             updated_at_hlc_ct: Set(self.updated_at_hlc_ct),
-//!             updated_at_hlc_id: Set(self.updated_at_hlc_id),
-//!             // Use `..Default::default()` if ActiveModel has more fields than Model,
-//!             // though explicit is often better. It's important here because 'id' might
-//!             // be Unchanged or Set, not covering all fields.
-//!             // ..Default::default() // Or be explicit if all fields are covered
-//!         }
-//!     }
-//! }
 //!
 //! // Example Usage (Conceptual - Requires RemoteDataSource impl etc.)
 //! /*
@@ -266,34 +238,27 @@
 //! also implement the `RemoteDataSource` trait to handle the communication with your specific
 //! remote peer.
 
-use crate::chunking::{
-    break_data_chunk,
-    generate_data_chunks,
-    ChunkingOptions,
-    DataChunk,
-    // SubDataChunk is used internally in break_data_chunk but not directly exposed here
-};
-use crate::hlc::{HLCModel, HLCQuery, HLCRecord, SyncTaskContext, HLC}; // Assuming hlc.rs is in the same crate
+use std::collections::{HashMap, VecDeque};
+use std::fmt::Debug;
+use std::hash::Hash;
+
 use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
-    ActiveModelBehavior, DatabaseConnection, EntityTrait, IntoActiveModel, PrimaryKeyTrait,
-    QueryFilter, TransactionTrait, Value,
+    ActiveModelBehavior, DatabaseConnection, EntityTrait, IntoActiveModel, Iterable,
+    PrimaryKeyTrait, QueryFilter, TransactionTrait, Value,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::fmt::Debug;
-use std::hash::Hash;
 use uuid::Uuid;
 
-// --- Constants ---
+use crate::chunking::{break_data_chunk, generate_data_chunks, ChunkingOptions, DataChunk};
+use crate::hlc::{HLCModel, HLCQuery, HLCRecord, SyncTaskContext, HLC};
+
 /// If a chunk pair has differing hashes, but the maximum record count
 /// in either chunk is below or equal to this threshold, fetch individual records directly
 /// instead of breaking the chunk down further.
 const COMPARISON_THRESHOLD: u64 = 50;
-
-// --- Enums and Structs ---
 
 /// Defines the direction of synchronization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -361,8 +326,8 @@ pub trait RemoteDataSource: Send + Sync + Debug {
         after_hlc: Option<&HLC>,
     ) -> Result<Vec<DataChunk>>
     where
-        E: HLCModel + EntityTrait + Send + Sync, // Entity constraints
-        E::Model: HLCRecord + Send + Sync + Deserialize<'static> + Serialize; // Model constraints (add Deserialize/Serialize)
+        E: HLCModel + EntityTrait + Send + Sync,
+        E::Model: HLCRecord + Send + Sync + for<'de> Deserialize<'de> + Serialize;
 
     /// Requests the remote node to break down a specified parent chunk into smaller sub-chunks.
     /// The remote implementation **should** perform verification (count and hash check)
@@ -380,8 +345,8 @@ pub trait RemoteDataSource: Send + Sync + Debug {
         sub_chunk_size: u64,
     ) -> Result<Vec<DataChunk>>
     where
-        E: HLCModel + EntityTrait + Send + Sync, // Entity constraints
-        E::Model: HLCRecord + Send + Sync + Deserialize<'static> + Serialize; // Model constraints
+        E: HLCModel + EntityTrait + Send + Sync,
+        E::Model: HLCRecord + Send + Sync + for<'de> Deserialize<'de> + Serialize;
 
     /// Fetches full records (`Model`) within a specific HLC range (inclusive)
     /// for a table from the remote node. Used when chunk hashes differ or for small ranges.
@@ -397,8 +362,8 @@ pub trait RemoteDataSource: Send + Sync + Debug {
         end_hlc: &HLC,
     ) -> Result<Vec<E::Model>>
     where
-        E: HLCModel + EntityTrait + Send + Sync, // Entity constraints
-        E::Model: HLCRecord + Send + Sync + Deserialize<'static> + Serialize; // Model constraints
+        E: HLCModel + EntityTrait + Send + Sync,
+        E::Model: HLCRecord + Send + Sync + for<'de> Deserialize<'de> + Serialize;
 
     /// Applies a batch of `SyncOperation`s (Inserts, Updates, Deletes) to the remote data source
     /// for a specific table.
@@ -419,8 +384,8 @@ pub trait RemoteDataSource: Send + Sync + Debug {
     ) -> Result<HLC>
     // Returns the HLC timestamp achieved remotely
     where
-        E: HLCModel + EntityTrait + Send + Sync, // Entity constraints
-        E::Model: HLCRecord + Send + Sync + Deserialize<'static> + Serialize; // Model constraints
+        E: HLCModel + EntityTrait + Send + Sync,
+        E::Model: HLCRecord + Send + Sync + for<'de> Deserialize<'de> + Serialize;
 
     /// Optional: Fetches the remote's perspective of the last sync HLC with the local node.
     /// This might be useful for consistency checks or specific synchronization protocols,
@@ -481,8 +446,6 @@ enum ReconciliationItem {
     /// An HLC range for which individual records need to be fetched from both local and remote sources.
     FetchRange(ComparisonRange),
 }
-
-// --- Main Synchronization Logic ---
 
 /// Performs synchronization for a single table between the local node and the remote source.
 ///
@@ -547,17 +510,17 @@ where
         .await
         .context("Failed to get remote node ID")?;
 
-    // --- 1. Fetch Initial Chunks ---
+    // 1. Fetch Initial Chunks
     // Fetch local and remote chunk metadata for data modified *after* the last sync HLC.
     let sync_start_hlc = metadata.last_sync_hlc.clone();
     let local_chunks_fut = generate_data_chunks::<E>(
         context.db,
         &context.chunking_options,
-        Some(sync_start_hlc.clone()), // Pass Option<&HLC>
+        Some(sync_start_hlc.clone()),
     );
     let remote_chunks_fut = context
         .remote_source
-        .get_remote_chunks::<E>(table_name, Some(&sync_start_hlc)); // Pass Option<&HLC>
+        .get_remote_chunks::<E>(table_name, Some(&sync_start_hlc));
 
     // Execute futures concurrently
     let (local_chunks_res, remote_chunks_res) = tokio::join!(local_chunks_fut, remote_chunks_fut);
@@ -579,7 +542,7 @@ where
         sync_start_hlc
     );
 
-    // --- 2. Reconcile Chunk Differences Recursively/Iteratively ---
+    // 2. Reconcile Chunk Differences Recursively/Iteratively
     // Initialize lists to store records that need detailed comparison
     let mut local_records_to_compare: Vec<E::Model> = Vec::new();
     let mut remote_records_to_compare: Vec<E::Model> = Vec::new();
@@ -771,7 +734,7 @@ where
         remote_records_to_compare.len()
     );
 
-    // --- 3. Merge and Compare Individual Records ---
+    // 3. Merge and Compare Individual Records
     // Use a HashMap keyed by `unique_id` to efficiently merge local and remote records
     // and track their state (LocalOnly, RemoteOnly, Both).
     let mut comparison_map: HashMap<String, RecordSyncState<E::Model>> = HashMap::new();
@@ -821,7 +784,7 @@ where
         }
     }
 
-    // --- 4. Conflict Resolution and Operation Generation ---
+    // 4. Conflict Resolution and Operation Generation
     // Iterate through the merged record states and determine the appropriate SyncOperation
     // based on the state, HLC comparison, Node ID tie-breaking, and SyncDirection.
     let mut local_ops: Vec<SyncOperation<E::Model>> = Vec::new();
@@ -978,7 +941,7 @@ where
         } // End match state
     } // End loop through comparison_map
 
-    // --- 5. Apply Changes Transactionally ---
+    // 5. Apply Changes Transactionally
     // Determine the final HLC for this sync run (the highest HLC encountered)
     let final_sync_hlc = max_hlc_encountered.clone(); // Use the tracked maximum HLC
 
@@ -1040,7 +1003,7 @@ where
         }
     };
 
-    // --- 6. Finalize and Update Metadata ---
+    // 6. Finalize and Update Metadata
     // Check the result of the remote changes application (or the placeholder Ok if skipped)
     match remote_apply_result {
         Ok(achieved_remote_hlc) => {
@@ -1081,7 +1044,7 @@ where
     }
 }
 
-// --- Helper Functions ---
+// Helper Functions
 
 /// Applies a list of local `SyncOperation`s within a single database transaction.
 async fn apply_local_changes<E>(
@@ -1137,20 +1100,22 @@ where
                 let id_str = model.unique_id(); // Get ID string before moving model
                 debug!("Local TXN: Updating record ID {}", id_str);
 
-                // Convert Model to ActiveModel. Ensure PK is Unchanged or excluded if set automatically.
-                let active_model: E::ActiveModel = model.into_active_model();
+                // Convert Model to ActiveModel.
+                let mut active_model: E::ActiveModel = model.into_active_model(); // Make it mutable
 
-                // Parse the primary key string into the actual PK ValueType
-                let pk_value = E::PrimaryKey::read_key(&id_str).with_context(|| {
-                    format!("Failed to parse primary key '{}' for update", id_str)
-                })?;
+                // The PrimaryKeyTrait provides an iter() method returning an iterator over the primary key columns.
+                for key in E::PrimaryKey::iter() {
+                    // Use reset() to change the ActiveValue to NotSet or Unchanged
+                    // Depending on the specific SeaORM version and desired behavior,
+                    // Unset might be more explicit if available, but reset usually works.
+                    active_model.reset(key.into_column());
+                }
 
                 // Use update_many with filter for safety, applying changes from active_model
-                // This assumes `into_active_model` prepares the `active_model` with Set values for changed fields
-                // and Unchanged/NotSet for PK.
                 let res = E::update_many()
-                    .set(active_model) // Apply changes defined in active_model
-                    .filter(E::unique_id_column().eq(pk_value.clone())) // Filter by PK
+                    .set(active_model) // Apply changes defined in active_model (PK should be reset now)
+                    // Filter using the unique_id column and the string ID directly
+                    .filter(E::unique_id_column().eq(id_str.clone()))
                     .exec(&txn)
                     .await;
 
@@ -1160,18 +1125,14 @@ where
             }
             SyncOperation::DeleteLocal(id_str) => {
                 debug!("Local TXN: Deleting record ID {}", id_str);
-                // Parse the primary key string
-                let pk_value = E::PrimaryKey::read_key(&id_str).with_context(|| {
-                    format!("Failed to parse primary key '{}' for delete", id_str)
-                })?;
-                // Use delete_many with filter, consistent with update
                 let delete_result = E::delete_many()
-                    .filter(E::unique_id_column().eq(pk_value.clone()))
+                    // Filter using the unique_id column and the string ID directly
+                    .filter(E::unique_id_column().eq(id_str.clone()))
                     .exec(&txn)
                     .await
                     .with_context(|| format!("Failed to delete local record {}", id_str))?;
 
-                // Check if any row was actually deleted (optional)
+                // Use delete_many with filter, consistent with update
                 if delete_result.rows_affected == 0 {
                     warn!(
                         "Local TXN: Delete operation for ID {} affected 0 rows.",
@@ -1381,7 +1342,7 @@ fn update_max_hlc(current_max: &mut HLC, potentially_new: &HLC) {
     }
 }
 
-// --- Trait for Primary Key Parsing ---
+// Trait for Primary Key Parsing
 
 /// Trait required for SeaORM Entities' PrimaryKey types.
 /// Enables parsing the string unique ID from `HLCRecord::unique_id()` back
@@ -1391,4 +1352,2021 @@ pub trait PrimaryKeyFromStr<T>: PrimaryKeyTrait {
     /// Parses a string representation into the primary key's value type.
     /// `T` should be `Self::ValueType`.
     fn read_key(s: &str) -> Result<T>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::fmt::Debug;
+    use std::sync::Arc;
+
+    use sea_orm::{
+        ConnectionTrait, Database, DbBackend, DbConn, NotSet, PrimaryKeyTrait, QueryOrder, Schema,
+        Set,
+    };
+    use serde::{Deserialize, Serialize};
+    use tokio::sync::Mutex as TokioMutex; // Use Tokio Mutex for async mocking
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::chunking::{calculate_chunk_hash, ChunkingOptions, DataChunk};
+    use crate::core::PrimaryKeyFromStr;
+    use crate::hlc::{hlc_timestamp_millis_to_rfc3339, HLCModel, HLCRecord, SyncTaskContext, HLC};
+
+    mod test_entity {
+        use std::str::FromStr;
+
+        use anyhow::{anyhow, Result};
+        use sea_orm::{
+            ActiveModelBehavior, DeriveEntityModel, DerivePrimaryKey, DeriveRelation, EnumIter,
+        };
+        use serde::{Deserialize, Serialize};
+        use uuid::Uuid;
+
+        use crate::hlc::{HLCModel, HLCRecord, HLC};
+
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+        #[sea_orm(table_name = "test_items")]
+        pub struct Model {
+            #[sea_orm(primary_key, auto_increment = true)]
+            pub id: i32,
+            #[sea_orm(unique)]
+            pub sync_id: String,
+            pub name: String,
+            pub value: Option<i32>,
+            #[sea_orm(column_type = "Text")]
+            pub created_at_hlc_ts: String,
+            pub created_at_hlc_ct: i32,
+            pub created_at_hlc_id: Uuid,
+            #[sea_orm(column_type = "Text")]
+            pub updated_at_hlc_ts: String,
+            pub updated_at_hlc_ct: i32,
+            pub updated_at_hlc_id: Uuid,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl HLCRecord for Model {
+            fn created_at_hlc(&self) -> Option<HLC> {
+                match chrono::DateTime::parse_from_rfc3339(&self.created_at_hlc_ts) {
+                    Ok(dt) => Some(HLC {
+                        timestamp: dt.timestamp_millis() as u64,
+                        version: self.created_at_hlc_ct as u32,
+                        node_id: self.created_at_hlc_id,
+                    }),
+                    Err(e) => {
+                        eprintln!(
+                            "Error parsing created_at HLC timestamp {}: {}",
+                            self.created_at_hlc_ts, e
+                        );
+                        None
+                    }
+                }
+            }
+
+            fn updated_at_hlc(&self) -> Option<HLC> {
+                match chrono::DateTime::parse_from_rfc3339(&self.updated_at_hlc_ts) {
+                    Ok(dt) => Some(HLC {
+                        timestamp: dt.timestamp_millis() as u64,
+                        version: self.updated_at_hlc_ct as u32,
+                        node_id: self.updated_at_hlc_id,
+                    }),
+                    Err(e) => {
+                        eprintln!(
+                            "Error parsing updated_at HLC timestamp {}: {}",
+                            self.updated_at_hlc_ts, e
+                        );
+                        None
+                    }
+                }
+            }
+
+            fn unique_id(&self) -> String {
+                self.sync_id.clone()
+            }
+
+            fn data_for_hashing(&self) -> serde_json::Value {
+                serde_json::json!({
+                    "sync_id": self.sync_id,
+                    "name": self.name,
+                    "value": self.value,
+                    // Omit created/updated HLC fields
+                })
+            }
+        }
+
+        impl HLCModel for Entity {
+            fn updated_at_time_column() -> Self::Column {
+                Column::UpdatedAtHlcTs
+            }
+            fn updated_at_version_column() -> Self::Column {
+                Column::UpdatedAtHlcCt
+            }
+            fn unique_id_column() -> Self::Column {
+                Column::SyncId
+            }
+        }
+
+        // Implement PrimaryKeyFromStr for the Entity's PrimaryKey
+        impl PrimaryKeyFromStr<<Self as PrimaryKeyTrait>::ValueType> for PrimaryKey
+        where
+            i32: FromStr,
+            <i32 as FromStr>::Err: std::error::Error + Send + Sync + 'static,
+        {
+            fn read_key(s: &str) -> Result<<Self as PrimaryKeyTrait>::ValueType> {
+                s.parse::<i32>() // Parse as i32
+                    .map_err(|e| {
+                        anyhow!(e)
+                            .context(format!("Failed to parse primary key string '{}' as i32", s))
+                    })
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct MockRemoteDataSource {
+        node_id: Uuid,
+        remote_data: Arc<TokioMutex<HashMap<String, Model>>>,
+        remote_chunks: Arc<TokioMutex<Vec<DataChunk>>>,
+        applied_ops: Arc<TokioMutex<Vec<SyncOperation<Model>>>>,
+        fail_on_apply: bool,
+        fail_on_get_records: bool,
+        fail_on_get_chunks: bool,
+        fail_on_get_sub_chunks: bool,
+        sub_chunk_requests: Arc<TokioMutex<Vec<(DataChunk, u64)>>>,
+        get_records_calls: Arc<TokioMutex<Vec<(HLC, HLC)>>>, // Track get_records calls
+    }
+
+    impl MockRemoteDataSource {
+        fn new(node_id: Uuid) -> Self {
+            MockRemoteDataSource {
+                node_id,
+                remote_data: Arc::new(TokioMutex::new(HashMap::new())),
+                remote_chunks: Arc::new(TokioMutex::new(Vec::new())),
+                applied_ops: Arc::new(TokioMutex::new(Vec::new())),
+                fail_on_apply: false,
+                fail_on_get_records: false,
+                fail_on_get_chunks: false,
+                fail_on_get_sub_chunks: false,
+                sub_chunk_requests: Arc::new(TokioMutex::new(Vec::new())),
+                get_records_calls: Arc::new(TokioMutex::new(Vec::new())),
+            }
+        }
+
+        async fn set_remote_data(&self, data: Vec<Model>) {
+            let mut guard = self.remote_data.lock().await;
+            guard.clear();
+            for item in data {
+                guard.insert(item.sync_id.clone(), item);
+            }
+        }
+
+        async fn set_remote_chunks(&self, chunks: Vec<DataChunk>) {
+            let mut guard = self.remote_chunks.lock().await;
+            *guard = chunks;
+        }
+
+        async fn get_applied_ops(&self) -> Vec<SyncOperation<Model>> {
+            self.applied_ops.lock().await.clone()
+        }
+
+        async fn get_sub_chunk_requests(&self) -> Vec<(DataChunk, u64)> {
+            self.sub_chunk_requests.lock().await.clone()
+        }
+
+        async fn get_records_call_ranges(&self) -> Vec<(HLC, HLC)> {
+            self.get_records_calls.lock().await.clone()
+        }
+
+        // Helper to clear mock state between tests if needed
+        #[allow(dead_code)]
+        async fn clear(&mut self) {
+            self.remote_data.lock().await.clear();
+            self.remote_chunks.lock().await.clear();
+            self.applied_ops.lock().await.clear();
+            self.sub_chunk_requests.lock().await.clear();
+            self.get_records_calls.lock().await.clear();
+            self.fail_on_apply = false;
+            self.fail_on_get_records = false;
+            self.fail_on_get_chunks = false;
+            self.fail_on_get_sub_chunks = false;
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteDataSource for MockRemoteDataSource {
+        async fn get_remote_node_id(&self) -> Result<Uuid> {
+            Ok(self.node_id)
+        }
+
+        async fn get_remote_chunks<E>(
+            &self,
+            _table_name: &str,
+            after_hlc: Option<&HLC>,
+        ) -> Result<Vec<DataChunk>>
+        where
+            E: HLCModel + EntityTrait + Send + Sync,
+            E::Model: HLCRecord + Send + Sync + for<'de> Deserialize<'de> + Serialize + Debug,
+        {
+            if self.fail_on_get_chunks {
+                return Err(anyhow!("Simulated failure getting remote chunks"));
+            }
+            let guard = self.remote_chunks.lock().await;
+            let filtered_chunks = match after_hlc {
+                Some(start) => guard
+                    .iter()
+                    .filter(|c| &c.start_hlc > start) // Compare &HLC with &HLC
+                    .cloned()
+                    .collect(),
+                None => guard.clone(),
+            };
+            let mut sorted = filtered_chunks;
+            sorted.sort_by(|a, b| a.start_hlc.cmp(&b.start_hlc));
+            Ok(sorted)
+        }
+
+        async fn get_remote_sub_chunks<E>(
+            &self,
+            _table_name: &str,
+            parent_chunk: &DataChunk,
+            sub_chunk_size: u64,
+        ) -> Result<Vec<DataChunk>>
+        where
+            E: HLCModel + EntityTrait + Send + Sync,
+            E::Model: HLCRecord + Send + Sync + for<'de> Deserialize<'de> + Serialize + Debug,
+        {
+            // Record the request
+            self.sub_chunk_requests
+                .lock()
+                .await
+                .push((parent_chunk.clone(), sub_chunk_size));
+
+            if self.fail_on_get_sub_chunks {
+                return Err(anyhow!("Simulated failure getting remote sub-chunks"));
+            }
+            // Simulate breakdown based on actual remote data
+            let data_guard = self.remote_data.lock().await;
+            let mut records_in_range: Vec<Model> = data_guard
+                .values()
+                .filter_map(|m| {
+                    m.updated_at_hlc().and_then(|hlc| {
+                        // Inclusive range check
+                        if hlc >= parent_chunk.start_hlc && hlc <= parent_chunk.end_hlc {
+                            Some(m.clone())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            records_in_range.sort_by_key(|m| m.updated_at_hlc()); // Sort by HLC
+
+            let mut sub_chunks = Vec::new();
+            if records_in_range.is_empty() {
+                return Ok(sub_chunks);
+            }
+
+            // Generate chunks based on the requested size
+            for chunk_slice in records_in_range.chunks(sub_chunk_size as usize) {
+                if chunk_slice.is_empty() {
+                    continue;
+                }
+                let first_hlc = chunk_slice.first().unwrap().updated_at_hlc().unwrap();
+                let last_hlc = chunk_slice.last().unwrap().updated_at_hlc().unwrap();
+                let count = chunk_slice.len() as u64;
+                // Calculate hash based on the concrete Model type
+                let hash = calculate_chunk_hash::<Model>(chunk_slice)
+                    .context("Failed to calculate sub-chunk hash")?;
+
+                sub_chunks.push(DataChunk {
+                    start_hlc: first_hlc,
+                    end_hlc: last_hlc,
+                    count,
+                    chunk_hash: hash,
+                });
+            }
+            Ok(sub_chunks)
+        }
+
+        async fn get_remote_records_in_hlc_range<E>(
+            &self,
+            _table_name: &str,
+            start_hlc: &HLC,
+            end_hlc: &HLC,
+        ) -> Result<Vec<E::Model>>
+        where
+            E: HLCModel + EntityTrait + Send + Sync,
+            E::Model: HLCRecord + Send + Sync + for<'de> Deserialize<'de> + Serialize + Debug, // Added Debug
+        {
+            // Record the call
+            self.get_records_calls
+                .lock()
+                .await
+                .push((start_hlc.clone(), end_hlc.clone()));
+
+            if self.fail_on_get_records {
+                return Err(anyhow!("Simulated failure getting remote records"));
+            }
+            let guard = self.remote_data.lock().await;
+            let mut records: Vec<Model> = guard // Use concrete Model type
+                .values()
+                .filter_map(|m| {
+                    m.updated_at_hlc().and_then(|hlc| {
+                        // Inclusive range check
+                        if hlc >= *start_hlc && hlc <= *end_hlc {
+                            Some(m.clone())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            records.sort_by_key(|m| m.updated_at_hlc()); // Ensure sorted order
+
+            // Convert Vec<Model> to Vec<E::Model> using Serde for safety
+            let mut result_vec = Vec::new();
+            for model in records {
+                let json_val =
+                    serde_json::to_value(&model).context("Failed to serialize mock record")?;
+                let e_model: E::Model = serde_json::from_value(json_val)
+                    .context("Failed to deserialize mock record into target type")?;
+                result_vec.push(e_model);
+            }
+            Ok(result_vec)
+        }
+
+        async fn apply_remote_changes<E>(
+            &self,
+            _table_name: &str,
+            operations: Vec<SyncOperation<E::Model>>,
+        ) -> Result<HLC>
+        where
+            E: HLCModel + EntityTrait + Send + Sync,
+            E::Model: HLCRecord + Send + Sync + for<'de> Deserialize<'de> + Serialize + Debug, // Added Debug
+        {
+            if self.fail_on_apply {
+                return Err(anyhow!("Simulated remote apply failure"));
+            }
+
+            let mut data_guard = self.remote_data.lock().await;
+            let mut ops_guard = self.applied_ops.lock().await;
+            let mut max_hlc = HLC::new(self.node_id); // Start with a base HLC
+
+            for op in operations {
+                // Convert E::Model to concrete Model for storage/logging in mock
+                let op_model: SyncOperation<Model> = match op {
+                    SyncOperation::InsertRemote(m) => {
+                        // Separate arm for InsertRemote
+                        let json_val = serde_json::to_value(&m)
+                            .context("Serialize failed in InsertRemote arm")?;
+                        let model: Model = serde_json::from_value(json_val)
+                            .context("Deserialize failed in InsertRemote arm")?;
+                        SyncOperation::InsertRemote(model)
+                    }
+                    SyncOperation::UpdateRemote(m) => {
+                        // Separate arm for UpdateRemote
+                        let json_val = serde_json::to_value(&m)
+                            .context("Serialize failed in UpdateRemote arm")?;
+                        let model: Model = serde_json::from_value(json_val)
+                            .context("Deserialize failed in UpdateRemote arm")?;
+                        SyncOperation::UpdateRemote(model)
+                    }
+                    SyncOperation::DeleteRemote(sync_id) => SyncOperation::DeleteRemote(sync_id),
+                    // These shouldn't normally be passed here, but handle for completeness/logging
+                    SyncOperation::InsertLocal(m) => SyncOperation::InsertLocal(
+                        serde_json::from_value(serde_json::to_value(&m)?)?,
+                    ),
+                    SyncOperation::UpdateLocal(m) => SyncOperation::UpdateLocal(
+                        serde_json::from_value(serde_json::to_value(&m)?)?,
+                    ),
+                    SyncOperation::DeleteLocal(pk_str) => SyncOperation::DeleteLocal(pk_str),
+                    SyncOperation::NoOp(sync_id) => SyncOperation::NoOp(sync_id),
+                };
+
+                ops_guard.push(op_model.clone()); // Store the concrete operation
+
+                // Simulate applying the change to the mock's data store
+                match op_model {
+                    SyncOperation::InsertRemote(model) | SyncOperation::UpdateRemote(model) => {
+                        if let Some(hlc) = model.updated_at_hlc() {
+                            if hlc > max_hlc {
+                                max_hlc = hlc; // Use clone here? No, hlc is owned/moved or copied
+                            }
+                        }
+                        data_guard.insert(model.sync_id.clone(), model);
+                    }
+                    SyncOperation::DeleteRemote(sync_id) => {
+                        data_guard.remove(&sync_id);
+                        // Deletes don't typically contribute to max_hlc unless tracked via tombstone HLC
+                    }
+                    // Ignore local ops or NoOps for data modification and max_hlc
+                    _ => {}
+                }
+            }
+            // If no operations modified data, return the node's base HLC, otherwise return max_hlc found
+            if ops_guard.iter().any(|op| {
+                matches!(
+                    op,
+                    SyncOperation::InsertRemote(_)
+                        | SyncOperation::UpdateRemote(_)
+                        | SyncOperation::DeleteRemote(_)
+                )
+            }) {
+                Ok(max_hlc)
+            } else {
+                Ok(HLC::new(self.node_id)) // Return base HLC if no real ops
+            }
+        }
+
+        async fn get_remote_last_sync_hlc(
+            &self,
+            _table_name: &str,
+            _local_node_id: Uuid,
+        ) -> Result<Option<HLC>> {
+            Ok(None)
+        }
+    }
+
+    use test_entity::{ActiveModel, Column, Entity, Model}; // Ensure PrimaryKey is imported
+    async fn setup_db() -> Result<DbConn> {
+        let db = Database::connect("sqlite::memory:").await?;
+        let schema = Schema::new(DbBackend::Sqlite);
+        let stmt = schema.create_table_from_entity(Entity); // Use test_entity::Entity
+        db.execute(db.get_database_backend().build(&stmt)).await?;
+        Ok(db)
+    }
+
+    fn hlc(ts: u64, v: u32, node_str: &str) -> HLC {
+        HLC {
+            timestamp: ts,
+            version: v,
+            node_id: Uuid::parse_str(node_str).unwrap(),
+        }
+    }
+
+    async fn insert_test_record(
+        db: &DbConn,
+        sync_id: &str,
+        name: &str,
+        val: Option<i32>,
+        created_hlc: &HLC,
+        updated_hlc: &HLC,
+    ) -> Result<Model> {
+        let created_ts_str = hlc_timestamp_millis_to_rfc3339(created_hlc.timestamp)?;
+        let updated_ts_str = hlc_timestamp_millis_to_rfc3339(updated_hlc.timestamp)?;
+
+        let model = ActiveModel {
+            id: NotSet,
+            sync_id: Set(sync_id.to_string()),
+            name: Set(name.to_string()),
+            value: Set(val),
+            created_at_hlc_ts: Set(created_ts_str.clone()),
+            created_at_hlc_ct: Set(created_hlc.version as i32),
+            created_at_hlc_id: Set(created_hlc.node_id),
+            updated_at_hlc_ts: Set(updated_ts_str.clone()),
+            updated_at_hlc_ct: Set(updated_hlc.version as i32),
+            updated_at_hlc_id: Set(updated_hlc.node_id),
+        };
+        Ok(Entity::insert(model).exec_with_returning(db).await?) // Use test_entity::Entity
+    }
+
+    const LOCAL_NODE_STR: &str = "11111111-1111-1111-1111-111111111111";
+    const REMOTE_NODE_STR: &str = "22222222-2222-2222-2222-222222222222";
+    const BASE_TS: u64 = 1700000000000;
+
+    #[tokio::test]
+    async fn test_synchronize_table_no_changes() -> Result<()> {
+        // ... (existing test code)
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS - 2000, 0, LOCAL_NODE_STR); // Start really early
+        let data_hlc = hlc(BASE_TS - 1000, 0, LOCAL_NODE_STR); // Data after initial, before 'now'
+
+        // Insert identical record locally and remotely
+        let record =
+            insert_test_record(&db, "sync_nochange", "Same", Some(1), &data_hlc, &data_hlc).await?;
+        remote_source.set_remote_data(vec![record.clone()]).await;
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let options = ChunkingOptions {
+            // Use small chunks to ensure chunking happens
+            min_size: 1,
+            max_size: 1,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options.clone(),
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        // Generate local chunks and set them as remote chunks for the mock
+        let local_chunks = generate_data_chunks::<Entity>(&db, &options, Some(start_hlc)).await?;
+        remote_source.set_remote_chunks(local_chunks.clone()).await;
+
+        assert!(
+            !local_chunks.is_empty(),
+            "Should have generated at least one chunk"
+        );
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        // Assertions
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert!(
+            applied_ops
+                .iter()
+                .all(|op| matches!(op, SyncOperation::NoOp(_))),
+            "No real operations should have been applied remotely"
+        ); // Should be NoOp
+
+        let get_records_calls = remote_source.get_records_call_ranges().await;
+        assert!(
+            get_records_calls.is_empty(),
+            "Should not have fetched records when chunks match"
+        );
+
+        let local_final_data = Entity::find().all(&db).await?;
+        assert_eq!(local_final_data.len(), 1); // Data remains
+        assert_eq!(final_metadata.last_sync_hlc, data_hlc); // HLC advances to the latest data HLC
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_local_only_insert_bidirectional() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let hlc1 = hlc(BASE_TS + 100, 0, LOCAL_NODE_STR);
+
+        // Insert local record *after* starting sync
+        insert_test_record(&db, "sync_local1", "NewLocal", Some(1), &hlc1, &hlc1).await?;
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 1,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+        // Remote has no chunks initially
+        remote_source.set_remote_chunks(vec![]).await;
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert_eq!(applied_ops.len(), 1);
+        match &applied_ops[0] {
+            SyncOperation::InsertRemote(model) => {
+                assert_eq!(model.sync_id, "sync_local1");
+                assert_eq!(model.name, "NewLocal");
+                assert_eq!(model.updated_at_hlc().unwrap(), hlc1);
+            }
+            _ => panic!("Expected InsertRemote operation"),
+        }
+
+        let remote_data_guard = remote_source.remote_data.lock().await;
+        assert_eq!(remote_data_guard.len(), 1);
+        assert!(remote_data_guard.contains_key("sync_local1"));
+
+        let local_final_data = Entity::find().all(&db).await?;
+        assert_eq!(local_final_data.len(), 1); // Local data remains
+        assert_eq!(final_metadata.last_sync_hlc, hlc1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_remote_only_insert_bidirectional() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let hlc1 = hlc(BASE_TS + 100, 0, REMOTE_NODE_STR);
+        let remote_record = Model {
+            id: 999, // Mock PK, doesn't matter for remote state
+            sync_id: "sync_remote1".to_string(),
+            name: "NewRemote".to_string(),
+            value: Some(2),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc1.timestamp)?,
+            created_at_hlc_ct: hlc1.version as i32,
+            created_at_hlc_id: hlc1.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc1.timestamp)?,
+            updated_at_hlc_ct: hlc1.version as i32,
+            updated_at_hlc_id: hlc1.node_id,
+        };
+        remote_source
+            .set_remote_data(vec![remote_record.clone()])
+            .await;
+        let remote_chunk = DataChunk {
+            start_hlc: hlc1.clone(),
+            end_hlc: hlc1.clone(),
+            count: 1,
+            chunk_hash: calculate_chunk_hash(&[remote_record])?,
+        };
+        remote_source.set_remote_chunks(vec![remote_chunk]).await;
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 1,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert!(
+            applied_ops.is_empty()
+                || applied_ops
+                    .iter()
+                    .all(|op| matches!(op, SyncOperation::NoOp(_))),
+            "No real ops should be sent to remote"
+        );
+
+        let local_final_data = Entity::find().all(&db).await?;
+        assert_eq!(local_final_data.len(), 1);
+        assert_eq!(local_final_data[0].sync_id, "sync_remote1");
+        assert_eq!(local_final_data[0].name, "NewRemote");
+        assert_eq!(local_final_data[0].updated_at_hlc().unwrap(), hlc1);
+        assert_eq!(final_metadata.last_sync_hlc, hlc1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_local_wins_conflict() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let hlc_remote_old = hlc(BASE_TS + 100, 0, REMOTE_NODE_STR);
+        let hlc_local_new = hlc(BASE_TS + 200, 0, LOCAL_NODE_STR); // Local has higher HLC
+
+        // Initial state: Both have the record, but local is newer
+        let _local_initial = insert_test_record(
+            &db,
+            "sync_conflict1",
+            "LocalWin",
+            Some(1),
+            &hlc_remote_old,
+            &hlc_local_new,
+        )
+        .await?; // Use remote HLC for creation, local for update
+        let remote_record = Model {
+            id: 998, // Mock PK
+            sync_id: "sync_conflict1".to_string(),
+            name: "RemoteOld".to_string(),
+            value: Some(99),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_remote_old.timestamp)?,
+            created_at_hlc_ct: hlc_remote_old.version as i32,
+            created_at_hlc_id: hlc_remote_old.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_remote_old.timestamp)?, // Older HLC
+            updated_at_hlc_ct: hlc_remote_old.version as i32,
+            updated_at_hlc_id: hlc_remote_old.node_id,
+        };
+        remote_source
+            .set_remote_data(vec![remote_record.clone()])
+            .await;
+
+        // Setup chunks - need one local, one remote covering the HLCs, with different hashes
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 1,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let local_chunks =
+            generate_data_chunks::<Entity>(&db, &options, Some(start_hlc.clone())).await?;
+        let remote_chunk = DataChunk {
+            start_hlc: hlc_remote_old.clone(), // Assume remote chunk covers its update time
+            end_hlc: hlc_remote_old.clone(),
+            count: 1,
+            chunk_hash: calculate_chunk_hash(&[remote_record])?,
+        };
+        remote_source.set_remote_chunks(vec![remote_chunk]).await;
+        // Ensure local chunk covers its HLC too
+        assert!(
+            local_chunks
+                .iter()
+                .any(|c| c.start_hlc <= hlc_local_new && c.end_hlc >= hlc_local_new),
+            "Local chunk should cover the new HLC"
+        );
+        assert_ne!(
+            local_chunks[0].chunk_hash,
+            remote_source.remote_chunks.lock().await[0].chunk_hash,
+            "Chunk hashes must differ"
+        );
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert_eq!(applied_ops.len(), 1);
+        match &applied_ops[0] {
+            SyncOperation::UpdateRemote(model) => {
+                assert_eq!(model.sync_id, "sync_conflict1");
+                assert_eq!(model.name, "LocalWin");
+                assert_eq!(model.updated_at_hlc().unwrap(), hlc_local_new);
+            }
+            op => panic!("Expected UpdateRemote operation, got {:?}", op),
+        }
+
+        let remote_data_guard = remote_source.remote_data.lock().await;
+        assert_eq!(remote_data_guard.len(), 1);
+        assert_eq!(
+            remote_data_guard.get("sync_conflict1").unwrap().name,
+            "LocalWin"
+        );
+
+        let local_final_data = Entity::find().all(&db).await?;
+        assert_eq!(local_final_data.len(), 1);
+        assert_eq!(local_final_data[0].name, "LocalWin"); // Local data remains the winner
+        assert_eq!(final_metadata.last_sync_hlc, hlc_local_new); // Max HLC encountered
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_remote_wins_conflict() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let hlc_local_old = hlc(BASE_TS + 100, 0, LOCAL_NODE_STR);
+        let hlc_remote_new = hlc(BASE_TS + 200, 0, REMOTE_NODE_STR); // Remote has higher HLC
+
+        // Initial state: Both have the record, but remote is newer
+        let _local_initial = insert_test_record(
+            &db,
+            "sync_conflict2",
+            "LocalOld",
+            Some(1),
+            &hlc_local_old,
+            &hlc_local_old,
+        )
+        .await?;
+        let remote_record = Model {
+            id: 997, // Mock PK
+            sync_id: "sync_conflict2".to_string(),
+            name: "RemoteWin".to_string(),
+            value: Some(100),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_local_old.timestamp)?, // Assume same creation HLC for simplicity
+            created_at_hlc_ct: hlc_local_old.version as i32,
+            created_at_hlc_id: hlc_local_old.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_remote_new.timestamp)?, // Newer HLC
+            updated_at_hlc_ct: hlc_remote_new.version as i32,
+            updated_at_hlc_id: hlc_remote_new.node_id,
+        };
+        remote_source
+            .set_remote_data(vec![remote_record.clone()])
+            .await;
+
+        // Setup chunks
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 1,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let local_chunks =
+            generate_data_chunks::<Entity>(&db, &options, Some(start_hlc.clone())).await?;
+        let remote_chunk = DataChunk {
+            start_hlc: hlc_remote_new.clone(), // Chunk covers the new HLC
+            end_hlc: hlc_remote_new.clone(),
+            count: 1,
+            chunk_hash: calculate_chunk_hash(&[remote_record.clone()])?,
+        };
+        remote_source.set_remote_chunks(vec![remote_chunk]).await;
+        assert!(!local_chunks.is_empty());
+        assert_ne!(
+            local_chunks[0].chunk_hash,
+            remote_source.remote_chunks.lock().await[0].chunk_hash
+        );
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert!(
+            applied_ops.is_empty()
+                || applied_ops
+                    .iter()
+                    .all(|op| matches!(op, SyncOperation::NoOp(_))),
+            "No real ops should be sent to remote"
+        ); // Remote already has winner
+
+        let local_final_data = Entity::find().all(&db).await?;
+        assert_eq!(local_final_data.len(), 1);
+        assert_eq!(local_final_data[0].name, "RemoteWin"); // Local data updated
+        assert_eq!(
+            local_final_data[0].updated_at_hlc().unwrap(),
+            hlc_remote_new
+        );
+        assert_eq!(final_metadata.last_sync_hlc, hlc_remote_new); // Max HLC encountered
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_tie_break_local_wins() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?; // Smaller UUID
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let common_hlc = hlc(BASE_TS + 100, 0, &local_node_id.to_string()); // Base HLC ts/v
+        let hlc_local_tie = HLC {
+            node_id: local_node_id,
+            ..common_hlc
+        };
+        let hlc_remote_tie = HLC {
+            node_id: remote_node_id,
+            ..common_hlc
+        }; // Same ts/v, different node
+
+        // Initial state: Both updated to the same HLC ts/v, but with different node IDs and data
+        let _local_initial = insert_test_record(
+            &db,
+            "sync_tie1",
+            "LocalTie",
+            Some(1),
+            &common_hlc,
+            &hlc_local_tie,
+        )
+        .await?;
+        let remote_record = Model {
+            id: 996, // Mock PK
+            sync_id: "sync_tie1".to_string(),
+            name: "RemoteTie".to_string(),
+            value: Some(2),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(common_hlc.timestamp)?,
+            created_at_hlc_ct: common_hlc.version as i32,
+            created_at_hlc_id: common_hlc.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_remote_tie.timestamp)?, // Same ts
+            updated_at_hlc_ct: hlc_remote_tie.version as i32,                              // Same v
+            updated_at_hlc_id: hlc_remote_tie.node_id, // Different node
+        };
+        remote_source
+            .set_remote_data(vec![remote_record.clone()])
+            .await;
+
+        // Setup chunks - need differing hashes
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 1,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let local_chunks =
+            generate_data_chunks::<Entity>(&db, &options, Some(start_hlc.clone())).await?;
+        let remote_chunk = DataChunk {
+            start_hlc: hlc_remote_tie.clone(), // Chunk HLC is specific to node
+            end_hlc: hlc_remote_tie.clone(),
+            count: 1,
+            chunk_hash: calculate_chunk_hash(&[remote_record])?,
+        };
+        remote_source.set_remote_chunks(vec![remote_chunk]).await;
+        assert!(!local_chunks.is_empty());
+        // The start/end HLCs will differ due to node_id, so align_and_queue_chunks will likely FetchRange.
+        // Let's ensure the test doesn't rely on specific chunk alignment logic details.
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert_eq!(applied_ops.len(), 1);
+        match &applied_ops[0] {
+            SyncOperation::UpdateRemote(model) => {
+                assert_eq!(model.sync_id, "sync_tie1");
+                assert_eq!(model.name, "LocalTie"); // Local wins tie-break
+                assert_eq!(model.updated_at_hlc().unwrap(), hlc_local_tie);
+            }
+            op => panic!("Expected UpdateRemote operation, got {:?}", op),
+        }
+
+        let remote_data_guard = remote_source.remote_data.lock().await;
+        assert_eq!(remote_data_guard.get("sync_tie1").unwrap().name, "LocalTie");
+        let local_final_data = Entity::find().all(&db).await?;
+        assert_eq!(local_final_data[0].name, "LocalTie");
+
+        // Max HLC encountered should be the one with the higher node ID when ts/v are equal
+        assert_eq!(final_metadata.last_sync_hlc, hlc_remote_tie);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_apply_local_changes_commit() -> Result<()> {
+        // ... (existing test code)
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let hlc_c = hlc(BASE_TS, 0, LOCAL_NODE_STR); // Creation
+        let hlc_i = hlc(BASE_TS + 1, 0, REMOTE_NODE_STR); // Insert comes from "remote" conceptually
+        let hlc_u = hlc(BASE_TS + 2, 0, REMOTE_NODE_STR); // Update comes from "remote"
+
+        let initial_record_u =
+            insert_test_record(&db, "sync_u", "UpdateMe", Some(1), &hlc_c, &hlc_c).await?;
+        let initial_record_d =
+            insert_test_record(&db, "sync_d", "DeleteMe", Some(2), &hlc_c, &hlc_c).await?;
+
+        let ops = vec![
+            SyncOperation::InsertLocal(Model {
+                id: 0, // Placeholder
+                sync_id: "sync_i".to_string(),
+                name: "Inserted".to_string(),
+                value: Some(10),
+                created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_i.timestamp)?,
+                created_at_hlc_ct: hlc_i.version as i32,
+                created_at_hlc_id: hlc_i.node_id,
+                updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_i.timestamp)?,
+                updated_at_hlc_ct: hlc_i.version as i32,
+                updated_at_hlc_id: hlc_i.node_id,
+            }),
+            SyncOperation::UpdateLocal(Model {
+                id: initial_record_u.id, // Use actual PK
+                sync_id: "sync_u".to_string(),
+                name: "Updated".to_string(),
+                value: Some(11),
+                // Preserve original creation HLC fields
+                created_at_hlc_ts: initial_record_u.created_at_hlc_ts.clone(),
+                created_at_hlc_ct: initial_record_u.created_at_hlc_ct,
+                created_at_hlc_id: initial_record_u.created_at_hlc_id,
+                // Set new update HLC fields
+                updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_u.timestamp)?,
+                updated_at_hlc_ct: hlc_u.version as i32,
+                updated_at_hlc_id: hlc_u.node_id,
+            }),
+            // Pass the sync_id for deletion, apply_local_changes uses it with unique_id_column
+            SyncOperation::DeleteLocal(initial_record_d.sync_id),
+            SyncOperation::NoOp("sync_noop".to_string()), // Should be ignored
+        ];
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let options = ChunkingOptions::default(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional, // Doesn't affect apply_local_changes
+            hlc_context: &hlc_context,
+        };
+
+        apply_local_changes::<Entity>(&context, ops).await?;
+
+        // Verify DB state after commit
+        let final_data = Entity::find().order_by_asc(Column::SyncId).all(&db).await?; // Order by sync_id for consistent results
+        assert_eq!(final_data.len(), 2); // sync_i and sync_u remain
+
+        assert_eq!(final_data[0].sync_id, "sync_i");
+        assert_eq!(final_data[0].name, "Inserted");
+        assert_eq!(final_data[0].updated_at_hlc().unwrap(), hlc_i);
+
+        assert_eq!(final_data[1].sync_id, "sync_u");
+        assert_eq!(final_data[1].name, "Updated");
+        assert_eq!(final_data[1].value, Some(11));
+        assert_eq!(final_data[1].updated_at_hlc().unwrap(), hlc_u);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_apply_local_changes_rollback() -> Result<()> {
+        // ... (existing test code)
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let hlc_initial = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let hlc_update_try = hlc(BASE_TS + 1, 0, LOCAL_NODE_STR);
+        let hlc_insert_fail = hlc(BASE_TS + 2, 0, LOCAL_NODE_STR);
+
+        // Insert initial record
+        let initial = insert_test_record(
+            &db,
+            "sync_dup",
+            "Initial",
+            Some(0),
+            &hlc_initial,
+            &hlc_initial,
+        )
+        .await?;
+
+        let ops = vec![
+            SyncOperation::UpdateLocal(Model {
+                id: initial.id,
+                sync_id: "sync_dup".to_string(),
+                name: "UpdateTry".to_string(), // This update should be rolled back
+                value: Some(1),
+                created_at_hlc_ts: initial.created_at_hlc_ts.clone(),
+                created_at_hlc_ct: initial.created_at_hlc_ct,
+                created_at_hlc_id: initial.created_at_hlc_id,
+                updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_update_try.timestamp)?,
+                updated_at_hlc_ct: hlc_update_try.version as i32,
+                updated_at_hlc_id: hlc_update_try.node_id,
+            }),
+            SyncOperation::InsertLocal(Model {
+                // This insert will fail (duplicate unique sync_id)
+                id: 0,                           // Placeholder
+                sync_id: "sync_dup".to_string(), // Duplicate unique key
+                name: "InsertedFail".to_string(),
+                value: Some(10),
+                created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_insert_fail.timestamp)?,
+                created_at_hlc_ct: hlc_insert_fail.version as i32,
+                created_at_hlc_id: hlc_insert_fail.node_id,
+                updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_insert_fail.timestamp)?,
+                updated_at_hlc_ct: hlc_insert_fail.version as i32,
+                updated_at_hlc_id: hlc_insert_fail.node_id,
+            }),
+        ];
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let options = ChunkingOptions::default(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+
+        let result = apply_local_changes::<Entity>(&context, ops).await;
+        assert!(
+            result.is_err(),
+            "Expected transaction to fail due to unique constraint violation"
+        );
+        eprintln!("Rollback Error: {:?}", result.err().unwrap()); // Log error for debugging
+
+        // Verify DB state after expected rollback
+        let final_data = Entity::find().all(&db).await?;
+        assert_eq!(final_data.len(), 1); // Only the initial record should exist
+        assert_eq!(final_data[0].sync_id, "sync_dup");
+        assert_eq!(final_data[0].name, "Initial"); // Name should NOT be "UpdateTry"
+        assert_eq!(final_data[0].updated_at_hlc().unwrap(), hlc_initial); // HLC should be the initial one
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_chunk_hash_mismatch_fetch() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let common_hlc = hlc(BASE_TS + 100, 0, LOCAL_NODE_STR); // Define the HLC to be used by both
+
+        insert_test_record(
+            &db,
+            "fetch_rec", // Unique ID for the record
+            "LocalData", // Local version's data
+            Some(1),
+            &common_hlc, // Use common_hlc for creation
+            &common_hlc, // Use common_hlc for update
+        )
+        .await?;
+
+        // Define the remote record with the same sync_id and HLC, but different data
+        let remote_record = Model {
+            id: 995,                          // Mock PK
+            sync_id: "fetch_rec".to_string(), // Same unique ID
+            name: "RemoteData".to_string(),   // Different data -> different hash
+            value: Some(2),
+            // Use the same HLC components as the local record
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(common_hlc.timestamp)?,
+            created_at_hlc_ct: common_hlc.version as i32,
+            created_at_hlc_id: common_hlc.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(common_hlc.timestamp)?,
+            updated_at_hlc_ct: common_hlc.version as i32,
+            updated_at_hlc_id: common_hlc.node_id,
+        };
+        remote_source
+            .set_remote_data(vec![remote_record.clone()])
+            .await;
+
+        // Setup chunks (count=1, below threshold)
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 1, // Ensure single record chunk
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let local_chunks =
+            generate_data_chunks::<Entity>(&db, &options, Some(start_hlc.clone())).await?;
+        let remote_chunk = DataChunk {
+            start_hlc: common_hlc.clone(), // Chunk covers the record's HLC
+            end_hlc: common_hlc.clone(),
+            count: 1,
+            chunk_hash: calculate_chunk_hash(&[remote_record.clone()])?, // Hash based on remote data
+        };
+        remote_source
+            .set_remote_chunks(vec![remote_chunk.clone()])
+            .await;
+
+        // Assertions on setup
+        assert_eq!(local_chunks.len(), 1, "Should generate one local chunk");
+        assert_eq!(local_chunks[0].count, 1);
+        assert!(local_chunks[0].count <= COMPARISON_THRESHOLD);
+        assert_eq!(
+            local_chunks[0].start_hlc, common_hlc,
+            "Local chunk start should match record HLC"
+        );
+        assert_eq!(
+            remote_chunk.start_hlc, common_hlc,
+            "Remote chunk start should match record HLC"
+        );
+        assert_eq!(
+            local_chunks[0].start_hlc, remote_chunk.start_hlc,
+            "Chunks should align"
+        ); // Verify alignment
+        assert_eq!(local_chunks[0].end_hlc, remote_chunk.end_hlc);
+        assert_ne!(
+            local_chunks[0].chunk_hash, remote_chunk.chunk_hash,
+            "Chunk hashes must differ"
+        ); // Verify hash mismatch
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        // ... rest of the assertions from the original test ...
+        let get_records_calls = remote_source.get_records_call_ranges().await;
+        assert_eq!(
+            get_records_calls.len(),
+            1,
+            "Should have called get_remote_records_in_hlc_range once"
+        );
+        assert_eq!(get_records_calls[0].0, common_hlc);
+        assert_eq!(get_records_calls[0].1, common_hlc);
+
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert_eq!(applied_ops.len(), 1);
+        match &applied_ops[0] {
+            SyncOperation::UpdateRemote(model) => {
+                assert_eq!(model.sync_id, "fetch_rec");
+                assert_eq!(model.name, "LocalData");
+            }
+            op => panic!("Expected UpdateRemote, got {:?}", op),
+        }
+
+        let local_data = Entity::find().all(context.db).await?;
+        assert_eq!(local_data[0].name, "LocalData");
+
+        assert_eq!(final_metadata.last_sync_hlc, common_hlc);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_chunk_hash_mismatch_breakdown() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let mut current_hlc = hlc(BASE_TS + 100, 0, LOCAL_NODE_STR); // HLC *before* first record
+
+        // Create > COMPARISON_THRESHOLD records locally and remotely with differing data
+        let record_count = COMPARISON_THRESHOLD + 5;
+        let mut local_records = Vec::new();
+        let mut remote_records = Vec::new();
+        let mut first_record_hlc = None;
+
+        for i in 0..record_count {
+            let sync_id = format!("break_rec_{}", i);
+            current_hlc.increment(); // Increment *before* use for the current record
+
+            if i == 0 {
+                first_record_hlc = Some(current_hlc.clone());
+            }
+
+            // Local record
+            let local = insert_test_record(
+                &db,
+                &sync_id,
+                &format!("Local_{}", i),
+                Some(i as i32),
+                &current_hlc, // Use the incremented HLC
+                &current_hlc, // Use the incremented HLC
+            )
+            .await?;
+            local_records.push(local.clone());
+
+            // Remote record (different data, same HLC for test simplicity)
+            let remote = Model {
+                id: 1000 + i as i32, // Mock PK
+                sync_id: sync_id.clone(),
+                name: format!("Remote_{}", i),
+                value: Some(i as i32 * 10),
+                created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(current_hlc.timestamp)?,
+                created_at_hlc_ct: current_hlc.version as i32,
+                created_at_hlc_id: current_hlc.node_id,
+                updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(current_hlc.timestamp)?,
+                updated_at_hlc_ct: current_hlc.version as i32,
+                updated_at_hlc_id: current_hlc.node_id,
+            };
+            remote_records.push(remote.clone());
+        }
+        let chunk_hlc_end = current_hlc.clone(); // HLC of the last record
+        let chunk_hlc_start = first_record_hlc.expect("Should have inserted at least one record"); // <--- Use the actual first HLC
+
+        remote_source.set_remote_data(remote_records.clone()).await;
+
+        // Setup chunks (count > threshold)
+        let options = ChunkingOptions {
+            min_size: record_count, // Ensure one chunk initially
+            max_size: record_count * 2,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let local_chunks =
+            generate_data_chunks::<Entity>(&db, &options, Some(start_hlc.clone())).await?;
+        let remote_chunk = DataChunk {
+            start_hlc: chunk_hlc_start.clone(), // <--- Use correct start HLC
+            end_hlc: chunk_hlc_end.clone(),
+            count: record_count,
+            chunk_hash: calculate_chunk_hash(&remote_records)?, // Different hash
+        };
+        remote_source
+            .set_remote_chunks(vec![remote_chunk.clone()])
+            .await;
+
+        // Assertions
+        assert_eq!(local_chunks.len(), 1);
+        assert_eq!(local_chunks[0].count, record_count);
+        assert!(local_chunks[0].count > COMPARISON_THRESHOLD);
+
+        // ---> Verify chunk alignment and hash difference <---
+        assert_eq!(
+            local_chunks[0].start_hlc,
+            chunk_hlc_start, // Compare local start to the actual first record HLC
+            "Local chunk start HLC ({:?}) should match the HLC of the first record ({:?})",
+            local_chunks[0].start_hlc,
+            chunk_hlc_start
+        );
+        assert_eq!(
+            local_chunks[0].start_hlc,
+            remote_chunk.start_hlc, // Compare local and remote start
+            "Ensure local ({:?}) and remote ({:?}) chunk start HLCs align",
+            local_chunks[0].start_hlc,
+            remote_chunk.start_hlc
+        );
+        assert_eq!(local_chunks[0].end_hlc, remote_chunk.end_hlc);
+        assert_ne!(local_chunks[0].chunk_hash, remote_chunk.chunk_hash);
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        // Assertions
+        let sub_chunk_requests = remote_source.get_sub_chunk_requests().await;
+        assert_eq!(
+            sub_chunk_requests.len(),
+            1,
+            "Should have requested sub-chunks once"
+        );
+        assert_eq!(
+            sub_chunk_requests[0].0, local_chunks[0],
+            "Sub-chunk request should be for the mismatched local chunk"
+        ); // Parent chunk matches local
+        assert_eq!(
+            sub_chunk_requests[0].1, COMPARISON_THRESHOLD,
+            "Sub-chunk size should match threshold"
+        ); // Target size is threshold
+
+        // Since sub-chunks will also likely mismatch, record fetching will happen eventually
+        let get_records_calls = remote_source.get_records_call_ranges().await;
+        assert!(
+            !get_records_calls.is_empty(),
+            "Should have eventually fetched records for sub-chunks"
+        );
+
+        // Conflict resolution (tie-break, local wins)
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert_eq!(
+            applied_ops.len(),
+            record_count as usize,
+            "Should have one update op per record"
+        );
+        for i in 0..record_count {
+            match &applied_ops[i as usize] {
+                SyncOperation::UpdateRemote(model) => {
+                    assert!(model.sync_id.starts_with("break_rec_"));
+                    assert!(model.name.starts_with("Local_")); // Local data pushed
+                }
+                op => panic!("Expected UpdateRemote, got {:?}", op),
+            }
+        }
+
+        assert_eq!(final_metadata.last_sync_hlc, chunk_hlc_end);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_misaligned_chunks() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let hlc1 = hlc(BASE_TS + 100, 0, LOCAL_NODE_STR);
+        let hlc2 = hlc(BASE_TS + 200, 0, LOCAL_NODE_STR);
+        let hlc3 = hlc(BASE_TS + 300, 0, REMOTE_NODE_STR); // Remote HLC starts later
+        let hlc4 = hlc(BASE_TS + 400, 0, REMOTE_NODE_STR);
+
+        // Local: Record L1@hlc1, L2@hlc2 -> Chunk [hlc1-hlc2]
+        insert_test_record(&db, "mis_l1", "L1", Some(1), &hlc1, &hlc1).await?;
+        insert_test_record(&db, "mis_l2", "L2", Some(2), &hlc2, &hlc2).await?;
+
+        // Remote: Record R1@hlc3, R2@hlc4 -> Chunk [hlc3-hlc4]
+        let r1 = Model {
+            id: 994,
+            sync_id: "mis_r1".to_string(),
+            name: "R1".to_string(),
+            value: Some(3),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc3.timestamp)?,
+            created_at_hlc_ct: hlc3.version as i32,
+            created_at_hlc_id: hlc3.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc3.timestamp)?,
+            updated_at_hlc_ct: hlc3.version as i32,
+            updated_at_hlc_id: hlc3.node_id,
+        };
+        let r2 = Model {
+            id: 993,
+            sync_id: "mis_r2".to_string(),
+            name: "R2".to_string(),
+            value: Some(4),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc4.timestamp)?,
+            created_at_hlc_ct: hlc4.version as i32,
+            created_at_hlc_id: hlc4.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc4.timestamp)?,
+            updated_at_hlc_ct: hlc4.version as i32,
+            updated_at_hlc_id: hlc4.node_id,
+        };
+        remote_source
+            .set_remote_data(vec![r1.clone(), r2.clone()])
+            .await;
+
+        // Setup chunks
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 10,
+            alpha: 0.0,
+            node_id: local_node_id,
+        }; // Allow slightly larger chunks
+        let local_chunks =
+            generate_data_chunks::<Entity>(&db, &options, Some(start_hlc.clone())).await?;
+        let remote_chunk = DataChunk {
+            start_hlc: hlc3.clone(), // Starts later than local chunk
+            end_hlc: hlc4.clone(),
+            count: 2,
+            chunk_hash: calculate_chunk_hash(&[r1.clone(), r2.clone()])?,
+        };
+        remote_source
+            .set_remote_chunks(vec![remote_chunk.clone()])
+            .await;
+
+        assert_eq!(local_chunks.len(), 1);
+        assert_eq!(local_chunks[0].start_hlc, hlc1);
+        assert_eq!(local_chunks[0].end_hlc, hlc2);
+        assert!(local_chunks[0].start_hlc < remote_chunk.start_hlc); // Verify misalignment
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        // Assertions
+        // align_and_queue_chunks should queue FetchRange for the misaligned parts
+        let get_records_calls = remote_source.get_records_call_ranges().await;
+        // Expect FetchRange for local chunk's range [hlc1-hlc2] and remote chunk's range [hlc3-hlc4]
+        assert!(
+            get_records_calls
+                .iter()
+                .any(|(s, e)| s == &hlc1 && e == &hlc2),
+            "Should have fetched for local range"
+        );
+        assert!(
+            get_records_calls
+                .iter()
+                .any(|(s, e)| s == &hlc3 && e == &hlc4),
+            "Should have fetched for remote range"
+        );
+        // Depending on queue order, might be 2 calls or potentially merged ranges if logic changes. Check for minimum expected calls.
+        assert!(
+            get_records_calls.len() >= 2,
+            "Expected at least two record fetch calls due to misalignment"
+        );
+
+        // Check final state: Local inserts remotely, remote inserts locally
+        let applied_ops = remote_source.get_applied_ops().await;
+        let inserted_remotely: Vec<_> = applied_ops
+            .iter()
+            .filter_map(|op| match op {
+                SyncOperation::InsertRemote(m) => Some(m.sync_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(inserted_remotely.contains(&"mis_l1".to_string()));
+        assert!(inserted_remotely.contains(&"mis_l2".to_string()));
+        assert_eq!(inserted_remotely.len(), 2);
+
+        let local_data = Entity::find()
+            .order_by_asc(Column::SyncId)
+            .all(context.db)
+            .await?;
+        assert_eq!(local_data.len(), 4); // L1, L2, R1, R2
+        assert_eq!(local_data[0].sync_id, "mis_l1");
+        assert_eq!(local_data[1].sync_id, "mis_l2");
+        assert_eq!(local_data[2].sync_id, "mis_r1");
+        assert_eq!(local_data[3].sync_id, "mis_r2");
+
+        assert_eq!(final_metadata.last_sync_hlc, hlc4); // Max HLC encountered
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_pull_only() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let hlc_local_old = hlc(BASE_TS + 100, 0, LOCAL_NODE_STR);
+        let hlc_remote_insert = hlc(BASE_TS + 150, 0, REMOTE_NODE_STR);
+        let hlc_remote_update = hlc(BASE_TS + 200, 0, REMOTE_NODE_STR); // Remote wins update HLC
+
+        // Local has one old record
+        let _l_old = insert_test_record(
+            &db,
+            "pull_rec",
+            "LocalOld",
+            Some(1),
+            &hlc_local_old,
+            &hlc_local_old,
+        )
+        .await?;
+
+        // Remote has a new record and an update for the existing one
+        let r_new = Model {
+            id: 992,
+            sync_id: "pull_new".to_string(),
+            name: "RemoteNew".to_string(),
+            value: Some(2),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_remote_insert.timestamp)?,
+            created_at_hlc_ct: hlc_remote_insert.version as i32,
+            created_at_hlc_id: hlc_remote_insert.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_remote_insert.timestamp)?,
+            updated_at_hlc_ct: hlc_remote_insert.version as i32,
+            updated_at_hlc_id: hlc_remote_insert.node_id,
+        };
+        let r_update = Model {
+            id: 991,
+            sync_id: "pull_rec".to_string(),
+            name: "RemoteUpdateWins".to_string(),
+            value: Some(3),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_local_old.timestamp)?,
+            created_at_hlc_ct: hlc_local_old.version as i32,
+            created_at_hlc_id: hlc_local_old.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_remote_update.timestamp)?,
+            updated_at_hlc_ct: hlc_remote_update.version as i32,
+            updated_at_hlc_id: hlc_remote_update.node_id,
+        };
+        remote_source
+            .set_remote_data(vec![r_new.clone(), r_update.clone()])
+            .await;
+
+        // Setup remote chunks
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 10,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let remote_chunk1 = DataChunk {
+            start_hlc: hlc_remote_insert.clone(),
+            end_hlc: hlc_remote_insert.clone(),
+            count: 1,
+            chunk_hash: calculate_chunk_hash(&[r_new.clone()])?,
+        };
+        let remote_chunk2 = DataChunk {
+            start_hlc: hlc_remote_update.clone(),
+            end_hlc: hlc_remote_update.clone(),
+            count: 1,
+            chunk_hash: calculate_chunk_hash(&[r_update.clone()])?,
+        };
+        remote_source
+            .set_remote_chunks(vec![remote_chunk1, remote_chunk2])
+            .await;
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Pull,
+            hlc_context: &hlc_context,
+        }; // PULL direction
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        // Assertions
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert!(
+            applied_ops.is_empty()
+                || applied_ops
+                    .iter()
+                    .all(|op| matches!(op, SyncOperation::NoOp(_))),
+            "No operations should have been sent to remote in Pull mode"
+        );
+
+        let local_data = Entity::find()
+            .order_by_asc(Column::SyncId)
+            .all(context.db)
+            .await?;
+        assert_eq!(local_data.len(), 2);
+
+        assert_eq!(local_data[0].sync_id, "pull_new"); // New record inserted locally
+        assert_eq!(local_data[0].name, "RemoteNew");
+        assert_eq!(local_data[0].updated_at_hlc().unwrap(), hlc_remote_insert);
+
+        assert_eq!(local_data[1].sync_id, "pull_rec");
+        assert_eq!(local_data[1].name, "RemoteUpdateWins"); // Existing record updated locally
+        assert_eq!(local_data[1].updated_at_hlc().unwrap(), hlc_remote_update);
+
+        assert_eq!(final_metadata.last_sync_hlc, hlc_remote_update); // Max HLC encountered
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_synchronize_table_push_only() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let remote_source = MockRemoteDataSource::new(remote_node_id);
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let hlc_remote_old = hlc(BASE_TS + 100, 0, REMOTE_NODE_STR);
+        let hlc_local_insert = hlc(BASE_TS + 150, 0, LOCAL_NODE_STR);
+        let hlc_local_update = hlc(BASE_TS + 200, 0, LOCAL_NODE_STR); // Local wins update HLC
+
+        // Local has a new record and an update for the existing one
+        let _l_new = insert_test_record(
+            &db,
+            "push_new",
+            "LocalNew",
+            Some(1),
+            &hlc_local_insert,
+            &hlc_local_insert,
+        )
+        .await?;
+        insert_test_record(
+            &db,
+            "push_rec",
+            "LocalUpdateWins",
+            Some(2),
+            &hlc_remote_old,
+            &hlc_local_update,
+        )
+        .await?; // Created with remote HLC, updated locally
+
+        // Remote has one old record
+        let r_old = Model {
+            id: 990,
+            sync_id: "push_rec".to_string(),
+            name: "RemoteOld".to_string(),
+            value: Some(99),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_remote_old.timestamp)?,
+            created_at_hlc_ct: hlc_remote_old.version as i32,
+            created_at_hlc_id: hlc_remote_old.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(hlc_remote_old.timestamp)?,
+            updated_at_hlc_ct: hlc_remote_old.version as i32,
+            updated_at_hlc_id: hlc_remote_old.node_id,
+        };
+        remote_source.set_remote_data(vec![r_old.clone()]).await;
+
+        // Setup remote chunks
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 10,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let remote_chunk = DataChunk {
+            start_hlc: hlc_remote_old.clone(),
+            end_hlc: hlc_remote_old.clone(),
+            count: 1,
+            chunk_hash: calculate_chunk_hash(&[r_old.clone()])?,
+        };
+        remote_source.set_remote_chunks(vec![remote_chunk]).await;
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Push,
+            hlc_context: &hlc_context,
+        }; // PUSH direction
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let final_metadata =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await?;
+
+        // Assertions
+        let applied_ops = remote_source.get_applied_ops().await;
+        assert_eq!(applied_ops.len(), 2); // InsertNew + UpdateExisting
+
+        let mut ops_map = HashMap::new();
+        for op in applied_ops {
+            match op {
+                SyncOperation::InsertRemote(m) => {
+                    ops_map.insert("insert", m);
+                }
+                SyncOperation::UpdateRemote(m) => {
+                    ops_map.insert("update", m);
+                }
+                _ => {}
+            }
+        }
+
+        assert!(ops_map.contains_key("insert"));
+        assert_eq!(ops_map["insert"].sync_id, "push_new");
+        assert_eq!(ops_map["insert"].name, "LocalNew");
+
+        assert!(ops_map.contains_key("update"));
+        assert_eq!(ops_map["update"].sync_id, "push_rec");
+        assert_eq!(ops_map["update"].name, "LocalUpdateWins");
+        assert_eq!(
+            ops_map["update"].updated_at_hlc().unwrap(),
+            hlc_local_update
+        );
+
+        // Verify local DB state is unchanged by Pull/Bi operations
+        let local_data = Entity::find()
+            .order_by_asc(Column::SyncId)
+            .all(context.db)
+            .await?;
+        assert_eq!(local_data.len(), 2);
+        assert_eq!(local_data[0].sync_id, "push_new"); // Local state remains as initially set up
+        assert_eq!(local_data[1].sync_id, "push_rec");
+        assert_eq!(local_data[1].name, "LocalUpdateWins");
+
+        assert_eq!(final_metadata.last_sync_hlc, hlc_local_update); // Max HLC encountered
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_error_getting_remote_chunks() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let mut remote_source = MockRemoteDataSource::new(remote_node_id);
+        remote_source.fail_on_get_chunks = true; // Simulate failure
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let options = ChunkingOptions::default(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let result =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await;
+
+        assert!(result.is_err());
+        let error = result.err().unwrap(); // Get the anyhow::Error
+        let error_string = error.to_string();
+        eprintln!("Actual error string (get_remote_chunks): {}", error_string);
+
+        assert!(error_string.contains("Failed to fetch remote chunks for table 'test_items'"));
+        assert!(error
+            .root_cause()
+            .to_string()
+            .contains("Simulated failure getting remote chunks"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_error_getting_remote_records() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let mut remote_source = MockRemoteDataSource::new(remote_node_id);
+        remote_source.fail_on_get_records = true; // Simulate failure
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let data_hlc = hlc(BASE_TS + 100, 0, LOCAL_NODE_STR);
+
+        // Setup scenario requiring record fetch (hash mismatch, count=1)
+        let local_record_model =
+            insert_test_record(&db, "fail_rec", "Local", Some(1), &data_hlc, &data_hlc).await?;
+        let remote_record = Model {
+            id: 989,
+            sync_id: "fail_rec".to_string(),
+            name: "Remote".to_string(),
+            value: Some(2),
+            created_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(data_hlc.timestamp)?,
+            created_at_hlc_ct: data_hlc.version as i32,
+            created_at_hlc_id: data_hlc.node_id,
+            updated_at_hlc_ts: hlc_timestamp_millis_to_rfc3339(data_hlc.timestamp)?,
+            updated_at_hlc_ct: data_hlc.version as i32,
+            updated_at_hlc_id: data_hlc.node_id,
+        };
+        remote_source
+            .set_remote_data(vec![remote_record.clone()])
+            .await;
+
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 1,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        // Generate local chunk based on the inserted record
+        let local_chunks =
+            generate_data_chunks::<Entity>(&db, &options, Some(start_hlc.clone())).await?;
+        let remote_chunk = DataChunk {
+            start_hlc: data_hlc.clone(),
+            end_hlc: data_hlc.clone(),
+            count: 1,
+            chunk_hash: calculate_chunk_hash(&[remote_record])?,
+        };
+        remote_source
+            .set_remote_chunks(vec![remote_chunk.clone()])
+            .await;
+
+        // Ensure chunk hashes differ (critical for triggering fetch)
+        let local_hash = calculate_chunk_hash(&[local_record_model])?;
+        assert_ne!(
+            local_hash, remote_chunk.chunk_hash,
+            "Chunk hashes must differ to trigger record fetch"
+        );
+        // Ensure chunks align correctly for the hash mismatch path
+        assert_eq!(local_chunks[0].start_hlc, remote_chunk.start_hlc);
+        assert_eq!(local_chunks[0].end_hlc, remote_chunk.end_hlc);
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let result =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await;
+
+        assert!(result.is_err());
+        let error = result.err().unwrap();
+        let error_string = error.to_string();
+        eprintln!("Actual error string (get_remote_records): {}", error_string);
+        assert!(error_string.contains("Failed to fetch remote records for range"));
+        assert!(error
+            .root_cause()
+            .to_string()
+            .contains("Simulated failure getting remote records"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_error_applying_remote_changes() -> Result<()> {
+        let db = setup_db().await?;
+        let local_node_id = Uuid::parse_str(LOCAL_NODE_STR)?;
+        let remote_node_id = Uuid::parse_str(REMOTE_NODE_STR)?;
+        let mut remote_source = MockRemoteDataSource::new(remote_node_id);
+        remote_source.fail_on_apply = true; // Simulate failure
+
+        let start_hlc = hlc(BASE_TS, 0, LOCAL_NODE_STR);
+        let insert_hlc = hlc(BASE_TS + 100, 0, LOCAL_NODE_STR);
+
+        // Setup scenario requiring remote apply (local insert, bidirectional)
+        insert_test_record(
+            &db,
+            "fail_apply",
+            "LocalNew",
+            Some(1),
+            &insert_hlc,
+            &insert_hlc,
+        )
+        .await?;
+        // Remote starts empty
+        remote_source.set_remote_data(vec![]).await;
+        remote_source.set_remote_chunks(vec![]).await;
+
+        let hlc_context = SyncTaskContext::new(local_node_id);
+        let options = ChunkingOptions {
+            min_size: 1,
+            max_size: 1,
+            alpha: 0.0,
+            node_id: local_node_id,
+        };
+        let context = SyncContext {
+            db: &db,
+            local_node_id,
+            remote_source: &remote_source,
+            chunking_options: options,
+            sync_direction: SyncDirection::Bidirectional,
+            hlc_context: &hlc_context,
+        };
+        let initial_metadata = SyncTableMetadata {
+            table_name: "test_items".to_string(),
+            last_sync_hlc: start_hlc.clone(),
+        };
+
+        let result =
+            synchronize_table::<Entity, _>(&context, "test_items", &initial_metadata).await;
+
+        assert!(result.is_err());
+        let error = result.err().unwrap();
+        let error_string = error.to_string();
+        eprintln!(
+            "Actual error string (apply_remote_changes): {}",
+            error_string
+        );
+        assert!(
+            error_string.contains("Sync failed for table 'test_items' during changes application") // Check context
+        );
+        assert!(error
+            .root_cause()
+            .to_string()
+            .contains("Simulated remote apply failure")); // Check root cause
+
+        Ok(())
+    }
 }
